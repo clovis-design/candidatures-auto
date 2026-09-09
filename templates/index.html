@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Candidatures Auto • Envoi massif CV + Lettre</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <div class="brand">
+      <div class="logo">✉️</div>
+      <div>
+        <h1>Candidatures Auto</h1>
+        <p>Envoi automatique CV + lettre de motivation personnalisée</p>
+      </div>
+    </div>
+    <div class="badge">⚡ 100% automatisé</div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="steps">
+    <div class="step active" data-step="1"><span>1</span> Profil & CV</div>
+    <div class="step" data-step="2"><span>2</span> Lettre</div>
+    <div class="step" data-step="3"><span>3</span> Entreprises</div>
+    <div class="step" data-step="4"><span>4</span> Envoi</div>
+  </div>
+
+  <div class="grid">
+    <!-- Colonne gauche : Formulaire -->
+    <div class="card">
+      <h2>👤 Vos informations</h2>
+      <p class="hint">Ces infos serviront à générer la lettre et le mail.</p>
+
+      <div class="row2">
+        <div class="field">
+          <label>Prénom *</label>
+          <input id="prenom" placeholder="Ex: Inès" value="">
+        </div>
+        <div class="field">
+          <label>Nom *</label>
+          <input id="nom" placeholder="Ex: Dupont">
+        </div>
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label>Email candidat *</label>
+          <input id="emailCandidat" type="email" placeholder="ines.dupont@email.com">
+        </div>
+        <div class="field">
+          <label>Téléphone</label>
+          <input id="telephone" placeholder="06 12 34 56 78">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Ville</label>
+        <input id="ville" placeholder="Lyon">
+      </div>
+
+      <div class="field">
+        <label>Poste visé *</label>
+        <input id="poste" placeholder="Ex: Développeuse Full-Stack, Alternance Marketing...">
+      </div>
+
+      <div class="field">
+        <label>Disponibilité</label>
+        <input id="disponibilite" placeholder="Ex: immédiatement, à partir du 01/10/2026">
+      </div>
+
+      <div class="field">
+        <label>Ton de la lettre</label>
+        <select id="ton">
+          <option value="professionnel">Professionnel (recommandé)</option>
+          <option value="dynamique">Dynamique</option>
+          <option value="sobre">Sobre / Classique</option>
+          <option value="creatif">Créatif</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Votre expérience / parcours (sera intégré dans la lettre)</label>
+        <textarea id="experience" rows="3" placeholder="Ex: Diplômée d'un Master en Informatique, 2 ans d'expérience en développement web avec React et Node.js..."></textarea>
+      </div>
+
+      <div class="field">
+        <label>Motivation spécifique (optionnel)</label>
+        <textarea id="motivation" rows="3" placeholder="Ex: Passionnée par l'innovation, je souhaite rejoindre une entreprise à impact... Laissez vide pour génération automatique."></textarea>
+      </div>
+
+      <div class="field">
+        <label>📎 Votre CV (PDF, DOC, DOCX) *</label>
+        <div class="dropzone" id="dropzone">
+          <input type="file" id="cv" accept=".pdf,.doc,.docx" hidden>
+          <div class="dz-icon">📄</div>
+          <p><b>Glisser-déposer</b> ou <span class="link">parcourir</span></p>
+          <small>PDF recommandé — max 10 Mo</small>
+          <div id="cvInfo" class="cvinfo"></div>
+        </div>
+      </div>
+
+      <div class="field check">
+        <label><input type="checkbox" id="personnalise" checked> Personnaliser la lettre pour chaque entreprise (recommandé)</label>
+        <small>Le nom de l'entreprise sera extrait automatiquement de l'email (ex: contact@capgemini.fr → Capgemini) et injecté dans la lettre.</small>
+      </div>
+
+      <hr>
+
+      <h2>✍️ Génération de la lettre</h2>
+      <button class="btn primary full" id="btnGenerate">⚡ Générer / Prévisualiser la lettre</button>
+      <div id="letterPreview" class="letter-preview hidden">
+        <div class="preview-header">
+          <h3>Aperçu</h3>
+          <a id="pdfLink" target="_blank" class="link">Voir PDF →</a>
+        </div>
+        <pre id="previewText"></pre>
+        <div class="field">
+          <label>Éditer la lettre avant envoi (vous pouvez modifier directement)</label>
+          <textarea id="lettre_template" rows="14"></textarea>
+          <small>Utilisez <code>{ENTREPRISE_NOM}</code> comme placeholder pour le nom d'entreprise. Il sera remplacé à l'envoi.</small>
+        </div>
+      </div>
+
+      <hr>
+
+      <h2>🏢 Liste des entreprises</h2>
+      <div class="field">
+        <label>Adresses email (une par ligne) *</label>
+        <textarea id="emails_text" rows="8" placeholder="rh@capgemini.fr&#10;Capgemini &lt;rh@capgemini.fr&gt;&#10;Dassault Systemes | jobs@dassault.com&#10;Thales ; recrutement@thalesgroup.com&#10;toto@gmail.com | Mon Entreprise Cible&#10;contact@orange.fr"></textarea>
+        <div class="email-stats">
+          <span id="emailCount">0 email valide</span> <span id="invalidCount" class="invalid"></span>
+          <button class="btn small ghost" id="btnClean">Nettoyer</button>
+        </div>
+        <small>Formats acceptés (un par ligne) : <code>email</code> seul, <code>Capgemini &lt;rh@capgemini.fr&gt;</code>, <code>email | Nom</code> ou <code>Nom ; email</code>. Le système déduplique automatiquement.</small>
+      </div>
+
+      <div class="toggle-card" id="customNamesCard">
+        <div class="toggle-row">
+          <div class="toggle-text">
+            <div class="toggle-title">🏷️ Noms d'entreprises personnalisés</div>
+            <div class="toggle-desc" id="customNamesDesc">Mode auto : nom extrait du domaine</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="toggle-status off" id="customNamesStatus">OFF</span>
+            <label class="switch">
+              <input type="checkbox" id="useCustomNames">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="toggle-examples">
+          <div class="example-grid">
+            <div class="example off" id="exOff">
+              <span class="ex-label">OFF</span>
+              <div class="ex-line"><code>rh@capgemini.fr</code> → <strong>Capgemini</strong></div>
+              <div class="ex-line muted"><code>toto@gmail.com</code> → <em>votre entreprise</em></div>
+            </div>
+            <div class="example on" id="exOn">
+              <span class="ex-label">ON</span>
+              <div class="ex-line"><code>toto@gmail.com | SuperCorp</code> → <strong>SuperCorp</strong></div>
+              <div class="ex-line muted"><code>Capgemini &lt;rh@cap...&gt;</code> → <strong>Capgemini</strong></div>
+            </div>
+          </div>
+          <div class="formats">Formats : <code>Nom &lt;email&gt;</code> · <code>email | Nom</code> · <code>Nom ; email</code> — Utilise <code>{ENTREPRISE_NOM}</code> (lettre) et <code>{ENTREPRISE}</code> (objet)</div>
+        </div>
+        <button type="button" class="toggle-help-btn" id="btnHelpCustom">ℹ️ plus d'infos</button>
+        <div class="toggle-help hidden" id="customNamesHelp">
+          <p><b>Quand l'activer ?</b> Active si tu as un fichier Excel ou une liste avec des noms précis (utile pour <code>gmail.com</code> où l'auto ne marche pas).</p>
+          <p><b>Quand le laisser OFF ?</b> Si tu colles juste des emails pro (<code>rh@entreprise.fr</code>), l'extraction auto suffit.</p>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Ou importer un fichier Excel / CSV / TXT</label>
+        <input type="file" id="csvImport" accept=".xlsx,.xls,.csv,.txt">
+        <small>Excel : headers en ligne 4 (Date envoi, Entreprise, Type, Stage, Interlocuteur, Coordonnées, Date entretien, Résultats) → données dès ligne 5. CSV : <code>Entreprise;email</code>. Le tableau se remplira automatiquement.</small>
+        <div class="excel-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <button class="btn small ghost" id="btnTemplateExcel" type="button">📥 Télécharger modèle Excel vide (ligne 4)</button>
+          <button class="btn small primary" id="btnGenerateExcel" type="button">📊 Générer Excel de suivi à partir de ma liste d'emails → remplit le tableau ligne 5+</button>
+        </div>
+        <div id="excelInfo" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+        <div id="excelPreview" class="hidden" style="margin-top:10px;overflow:auto;border:1px solid var(--border);border-radius:10px;max-height:320px">
+          <table id="previewTable" style="width:100%;font-size:11px;border-collapse:collapse"></table>
+          <div id="previewStats" style="padding:8px;font-size:11px;color:var(--muted);border-top:1px solid var(--border);background:#f8fafc"></div>
+        </div>
+      </div>
+
+      <hr>
+
+      <h2>📧 Configuration d'envoi & message</h2>
+      <div class="alert info">
+        <b>Comment envoyer ?</b> Utilisez votre adresse Gmail avec un <b>mot de passe d'application</b> (recommandé) ou tout SMTP (Outlook, OVH, etc.). <a href="https://myaccount.google.com/apppasswords" target="_blank">Créer un mot de passe d'application Gmail →</a>
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label>Serveur SMTP *</label>
+          <input id="smtp_host" placeholder="smtp.gmail.com" value="smtp.gmail.com">
+        </div>
+        <div class="field">
+          <label>Port *</label>
+          <input id="smtp_port" placeholder="587" value="587">
+        </div>
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label>Utilisateur SMTP (votre email) *</label>
+          <input id="smtp_user" placeholder="vous@gmail.com">
+        </div>
+        <div class="field">
+          <label>Mot de passe / App password *</label>
+          <input id="smtp_pass" type="password" placeholder="••••••••••••">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Sécurité</label>
+        <select id="smtp_secure">
+          <option value="tls" selected>STARTTLS (587 - Gmail recommandé)</option>
+          <option value="ssl">SSL (465)</option>
+          <option value="none">Aucune</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Nom d'expéditeur</label>
+        <input id="from_name" placeholder="Ex: Inès Dupont">
+      </div>
+
+      <div class="field">
+        <label>Objet de l'email *</label>
+        <input id="subject" placeholder="Candidature - {ENTREPRISE} - Poste de ...">
+        <small>Utilisez <code>{ENTREPRISE}</code> pour personnaliser l'objet. Laissez vide pour objet automatique.</small>
+      </div>
+
+      <div class="field">
+        <label>Corps de l'email</label>
+        <textarea id="message_body" rows="7" placeholder="Madame, Monsieur,
+
+Veuillez trouver ci-joint ma candidature...
+"></textarea>
+        <small>Laissez vide pour un corps automatique. Vous pouvez utiliser <code>{ENTREPRISE}</code>.</small>
+      </div>
+
+      <div class="field">
+        <label>Délai entre 2 envois (secondes)</label>
+        <input id="delay" type="number" min="0" step="0.5" value="1.5">
+        <small>Pour éviter d'être marqué comme spam, gardez ≥1s.</small>
+      </div>
+
+      <button class="btn send full" id="btnSend">🚀 Envoyer à toutes les entreprises</button>
+      <p class="hint center">Envoi sécurisé • CV + lettre en pièces jointes • Suivi en temps réel</p>
+    </div>
+
+    <!-- Colonne droite : Logs & aide -->
+    <div class="side">
+      <div class="card sticky">
+        <h3>📊 Progression</h3>
+        <div class="progress-wrap">
+          <div class="progress-bar"><div id="progress" style="width:0%"></div></div>
+          <div id="progressText" class="progress-text">En attente d'envoi</div>
+        </div>
+        <div id="results" class="results"></div>
+        <div id="summary" class="summary hidden"></div>
+      </div>
+
+      <div class="card help">
+        <h3>💡 Mode d'emploi</h3>
+        <ol>
+          <li>Renseignez vos infos + déposez votre CV</li>
+          <li>Générez la lettre (éditable)</li>
+          <li>Collez la liste d'emails</li>
+          <li>Configurez SMTP (Gmail App Password en 2 min)</li>
+          <li>Cliquez sur Envoyer → suivi live</li>
+        </ol>
+        <details>
+          <summary>Gmail : créer un App Password</summary>
+          <p>1. Activez la validation 2 étapes sur <a href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank">Google</a><br>2. Allez sur <a href="https://myaccount.google.com/apppasswords" target="_blank">App Passwords</a><br>3. Choisissez "Mail" → générez → copiez les 16 caractères → collez dans "Mot de passe"</p>
+        </details>
+        <details>
+          <summary>Éviter le spam</summary>
+          <p>• Espacez les envois (1,5s)<br>• Pas plus de 50-100/jour avec Gmail<br>• Personnalisez l'objet/lettre<br>• Vérifiez que les emails sont valides</p>
+        </details>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="footer">Fait avec ❤️ — Candidatures Auto • Vos données ne quittent pas votre machine sauf pour l'envoi SMTP</footer>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
