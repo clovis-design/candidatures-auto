@@ -417,6 +417,28 @@ En vous remerciant de l'attention portée à ma candidature, je vous prie d'agr�
 
     return lettre
 
+def apply_letter_placeholders(text, entreprise_nom, poste_entry="", candidat_infos=None):
+    """Remplace tous les placeholders supportés dans une lettre personnalisée.
+    Supportés : {ENTREPRISE_NOM}, {ENTREPRISE}, {POSTE}, {STAGE}, {NOM}, {PRENOM}
+    Insensible aux espaces : { ENTREPRISE } marche aussi.
+    """
+    if not text:
+        return text
+    candidat_infos = candidat_infos or {}
+    replacements = {
+        "ENTREPRISE_NOM": entreprise_nom,
+        "ENTREPRISE": entreprise_nom,
+        "POSTE": poste_entry,
+        "STAGE": poste_entry,
+        "NOM": candidat_infos.get('nom', ''),
+        "PRENOM": candidat_infos.get('prenom', ''),
+    }
+    # Remplace { KEY } avec espaces éventuels, insensible à la casse sur la clé
+    def repl(m):
+        key = m.group(1).strip().upper()
+        return replacements.get(key, m.group(0))
+    return re.sub(r'\{\s*([A-Za-z_]+)\s*\}', repl, text)
+
 def extract_company_name(email):
     """ Essaie de deviner le nom d'entreprise depuis l'email: contact@capgemini.fr -> Capgemini """
     try:
@@ -654,8 +676,11 @@ def api_send():
                 entreprise_nom = extract_company_name(dest)
             # Stage ciblé par entreprise (depuis Excel ligne 5+ col 4) sinon poste global
             poste_entry = (entry.get("stage") or "").strip() or poste
-            lettre_personnalisee = lettre_template.replace("{ENTREPRISE_NOM}", entreprise_nom)
-            # Si stage par entreprise différent du poste global, on personnalise aussi le poste dans la lettre
+            # Remplace les placeholders ({ENTREPRISE_NOM}, {ENTREPRISE}, {POSTE}, etc.)
+            # Fonctionne pour lettre auto ET lettre perso de l'utilisateur
+            lettre_personnalisee = apply_letter_placeholders(lettre_template, entreprise_nom, poste_entry, candidat_infos)
+            # Compat : si stage par entreprise différent du poste global, remplace aussi
+            # le poste global en dur dans la lettre (cas lettre auto générée)
             if poste and poste_entry != poste:
                 # Remplace le poste global par le stage spécifique dans la lettre (toutes occurrences)
                 lettre_personnalisee = lettre_personnalisee.replace(poste, poste_entry)
@@ -747,6 +772,32 @@ def api_parse_emails():
     entries, invalid = parse_entries(raw)
     emails = [e["email"] for e in entries]
     return jsonify({"emails": emails, "entries": entries, "invalid": invalid, "count": len(emails)})
+
+@app.route("/api/preview-letter", methods=["POST"])
+def api_preview_letter():
+    """Prévisualise une lettre PERSO fournie par l'utilisateur (sans la régénérer).
+    Remplace les placeholders par un exemple pour l'aperçu + génère le PDF.
+    """
+    data = request.get_json() or {}
+    text = data.get('text', '')
+    if not text.strip():
+        return jsonify({"error": "Lettre vide"}), 400
+    exemple_entreprise = data.get('entrepriseExemple') or "ExempleCorp"
+    exemple_poste = data.get('poste') or "le poste visé"
+    candidat_infos = {
+        'prenom': data.get('prenom', ''),
+        'nom': data.get('nom', ''),
+        'ville': data.get('ville', ''),
+        'telephone': data.get('telephone', ''),
+        'emailCandidat': data.get('emailCandidat', ''),
+    }
+    preview = apply_letter_placeholders(text, exemple_entreprise, exemple_poste, candidat_infos)
+    preview_path = GENERATED_FOLDER / f"lettre_custom_{uuid.uuid4().hex[:8]}.pdf"
+    try:
+        create_pdf_letter(preview, preview_path, candidat_infos)
+    except Exception as e:
+        return jsonify({"error": f"Erreur PDF: {str(e)}"}), 400
+    return jsonify({"preview": preview, "pdf_url": f"/generated/{preview_path.name}"})
 
 @app.route("/api/excel-template", methods=["GET"])
 def api_excel_template():

@@ -88,6 +88,16 @@ hr{border:none;border-top:1px solid var(--border);margin:18px 0}
 .footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
 code{background:#f1f5f9;padding:1px 5px;border-radius:6px;font-family:JetBrains Mono,monospace;font-size:11px}
 
+/* Mode switch lettre auto/custom */
+.mode-switch{display:flex;background:#f1f5f9;border:1px solid var(--border);border-radius:999px;padding:4px;gap:4px;margin:8px 0 4px}
+.mode-btn{flex:1;border:none;background:transparent;border-radius:999px;padding:9px 12px;font-weight:700;font-size:13px;cursor:pointer;color:var(--muted);transition:.15s}
+.mode-btn.active{background:white;color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.12)}
+.mode-btn:not(.active):hover{color:var(--text)}
+.hidden{display:none!important}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.chip{border:1px solid #c7d2fe;background:#eef2ff;color:var(--primary-2);border-radius:999px;padding:5px 10px;font-family:JetBrains Mono,monospace;font-size:11px;font-weight:600;cursor:pointer;transition:.12s}
+.chip:hover{background:var(--primary);color:white;border-color:var(--primary)}
+
 /* Toggle card - noms personnalisés */
 .toggle-card{border:1px solid var(--border);border-radius:12px;background:#fbfdff;padding:12px;margin:12px 0}
 .toggle-row{display:flex;justify-content:space-between;align-items:center;gap:12px}

@@ -110,18 +110,50 @@
 
       <hr>
 
-      <h2>✍️ Génération de la lettre</h2>
-      <button class="btn primary full" id="btnGenerate">⚡ Générer / Prévisualiser la lettre</button>
+      <h2>✍️ Lettre de motivation</h2>
+      <div class="mode-switch" role="tablist" aria-label="Mode lettre">
+        <button type="button" id="modeAuto" class="mode-btn active">⚡ Auto (générée)</button>
+        <button type="button" id="modeCustom" class="mode-btn">✍️ Ma propre lettre</button>
+      </div>
+
+      <!-- Panneau AUTO : feature actuelle conservée -->
+      <div id="autoPanel">
+        <p class="hint" style="margin:8px 0">La lettre est générée à partir de ton profil (expérience, ton, poste...), puis personnalisée par entreprise à l'envoi.</p>
+        <button class="btn primary full" id="btnGenerate">⚡ Générer / Prévisualiser la lettre</button>
+      </div>
+
+      <!-- Panneau CUSTOM : lettre perso avec annotations -->
+      <div id="customPanel" class="hidden">
+        <p class="hint" style="margin:8px 0">Colle ou écris ta propre lettre ci-dessous. Utilise les annotations, elles seront remplacées pour chaque entreprise à l'envoi.</p>
+        <div class="chips">
+          <button type="button" class="chip" data-insert="{ENTREPRISE_NOM}">{ENTREPRISE_NOM}</button>
+          <button type="button" class="chip" data-insert="{ENTREPRISE}">{ENTREPRISE}</button>
+          <button type="button" class="chip" data-insert="{POSTE}">{POSTE}</button>
+          <button type="button" class="chip" data-insert="{PRENOM}">{PRENOM}</button>
+          <button type="button" class="chip" data-insert="{NOM}">{NOM}</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+          <button type="button" class="btn small ghost" id="btnPreviewCustom">👁️ Prévisualiser ma lettre (PDF)</button>
+          <label class="btn small ghost" style="cursor:pointer">📂 Importer .txt <input type="file" id="customFile" accept=".txt,.md" hidden></label>
+          <button type="button" class="btn small ghost" id="btnUseExample">📝 Charger un exemple</button>
+        </div>
+        <div class="alert info" style="margin:8px 0">
+          <b>Annotations :</b> <code>{ENTREPRISE_NOM}</code> ou <code>{ENTREPRISE}</code> → nom de l'entreprise,
+          <code>{POSTE}</code> → stage/poste ciblé, <code>{PRENOM}</code> <code>{NOM}</code> → tes infos.
+          Ex : <em>« ... au sein de {ENTREPRISE_NOM} pour le poste de {POSTE} ... »</em>
+        </div>
+      </div>
+
       <div id="letterPreview" class="letter-preview hidden">
         <div class="preview-header">
-          <h3>Aperçu</h3>
+          <h3>Aperçu <span id="previewMode" style="font-weight:400;color:var(--muted)"></span></h3>
           <a id="pdfLink" target="_blank" class="link">Voir PDF →</a>
         </div>
         <pre id="previewText"></pre>
         <div class="field">
-          <label>Éditer la lettre avant envoi (vous pouvez modifier directement)</label>
-          <textarea id="lettre_template" rows="14"></textarea>
-          <small>Utilisez <code>{ENTREPRISE_NOM}</code> comme placeholder pour le nom d'entreprise. Il sera remplacé à l'envoi.</small>
+          <label>Lettre qui sera envoyée (modifiable directement)</label>
+          <textarea id="lettre_template" rows="14" placeholder="Clique sur « Générer » en mode Auto, ou écris ta lettre en mode « Ma propre lettre »..."></textarea>
+          <small>Mode <b id="modeLabel">Auto</b> — placeholders remplacés à l'envoi. Bascule de mode ne supprime pas ton texte (sauf si tu régénères).</small>
         </div>
       </div>
 

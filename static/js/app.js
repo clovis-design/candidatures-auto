@@ -197,7 +197,107 @@ document.getElementById('btnHelpCustom')?.addEventListener('click', ()=>{
 // init
 updateCustomNamesUI();
 
-// Génération lettre
+// --- Mode lettre : Auto vs Ma propre lettre ---
+let letterMode = 'auto'; // 'auto' | 'custom'
+function setLetterMode(mode){
+  letterMode = mode;
+  $('modeAuto').classList.toggle('active', mode==='auto');
+  $('modeCustom').classList.toggle('active', mode==='custom');
+  $('autoPanel').classList.toggle('hidden', mode!=='auto');
+  $('customPanel').classList.toggle('hidden', mode!=='custom');
+  $('modeLabel').textContent = mode==='auto' ? 'Auto' : 'Ma propre lettre';
+  // Si on passe en custom et le textarea est vide, on affiche la zone de preview pour écrire
+  if(mode==='custom'){
+    $('letterPreview').classList.remove('hidden');
+    if(!$('lettre_template').value.trim()){
+      $('previewText').textContent='Écris ou colle ta lettre ci-dessous avec les annotations {ENTREPRISE_NOM}, {POSTE}... puis clique « Prévisualiser ».';
+    }
+  }
+}
+$('modeAuto')?.addEventListener('click', ()=> setLetterMode('auto'));
+$('modeCustom')?.addEventListener('click', ()=> setLetterMode('custom'));
+
+// Insertion placeholders dans la lettre au curseur
+document.querySelectorAll('.chip[data-insert]')?.forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const ta=$('lettre_template');
+    const ins=btn.dataset.insert;
+    const start=ta.selectionStart ?? ta.value.length;
+    const end=ta.selectionEnd ?? ta.value.length;
+    ta.value = ta.value.slice(0,start) + ins + ta.value.slice(end);
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = start + ins.length;
+    $('letterPreview').classList.remove('hidden');
+  });
+});
+
+// Import .txt dans lettre custom
+$('customFile')?.addEventListener('change', e=>{
+  const f=e.target.files[0];
+  if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    $('lettre_template').value = r.result;
+    $('letterPreview').classList.remove('hidden');
+    setLetterMode('custom');
+  };
+  r.readAsText(f);
+});
+
+// Exemple de lettre perso avec annotations
+$('btnUseExample')?.addEventListener('click', ()=>{
+  const p=$('prenom').value.trim()||'[Prénom]';
+  const n=$('nom').value.trim()||'[Nom]';
+  const poste=$('poste').value.trim()||'le stage visé';
+  $('lettre_template').value =
+`${p} ${n}
+
+À l'attention du service Recrutement
+{ENTREPRISE_NOM}
+
+Objet : Candidature au poste de ${poste}
+
+Madame, Monsieur,
+
+C'est avec un vif intérêt que je vous adresse ma candidature au poste de {POSTE} au sein de {ENTREPRISE_NOM}.
+
+[Écris ici ton paragraphe d'expérience : diplôme, compétences, projets...]
+
+Motivé(e) par les missions de {ENTREPRISE}, je serais ravi(e) d'échanger avec vous lors d'un entretien.
+
+Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
+
+{PRENOM} {NOM}`;
+  $('letterPreview').classList.remove('hidden');
+});
+
+// Prévisualisation lettre PERSO (sans régénérer) via /api/preview-letter
+$('btnPreviewCustom')?.addEventListener('click', async ()=>{
+  const text=$('lettre_template').value;
+  if(!text.trim()){ alert('Écris d\'abord ta lettre dans la zone de texte.'); return; }
+  const btn=$('btnPreviewCustom');
+  btn.disabled=true; btn.textContent='⏳ Aperçu...';
+  try{
+    const res=await fetch('/api/preview-letter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      text,
+      prenom:$('prenom').value.trim(), nom:$('nom').value.trim(),
+      ville:$('ville').value.trim(), telephone:$('telephone').value.trim(),
+      emailCandidat:$('emailCandidat').value.trim(),
+      poste:$('poste').value.trim()||'le poste visé',
+      entrepriseExemple:'ExempleCorp'
+    })});
+    const j=await res.json();
+    if(!res.ok) throw new Error(j.error||'Erreur');
+    $('letterPreview').classList.remove('hidden');
+    $('previewText').textContent=j.preview+'\n\n— (aperçu avec ExempleCorp, à l\'envoi chaque entreprise aura son nom)';
+    $('previewMode').textContent='(ma lettre)';
+    $('pdfLink').href=j.pdf_url;
+    $('letterPreview').scrollIntoView({behavior:'smooth', block:'center'});
+  }catch(err){ alert('Erreur aperçu: '+err.message); }
+  finally{ btn.disabled=false; btn.textContent='👁️ Prévisualiser ma lettre (PDF)'; }
+});
+
+// Génération lettre AUTO (feature existante conservée)
 $('btnGenerate').addEventListener('click', async ()=>{
   const data=collectFormData();
   if(!data.prenom || !data.nom || !data.poste){
@@ -213,6 +313,7 @@ $('btnGenerate').addEventListener('click', async ()=>{
     $('letterPreview').classList.remove('hidden');
     $('previewText').textContent=j.preview;
     $('lettre_template').value=j.template;
+    $('previewMode').textContent='(auto)';
     $('pdfLink').href=j.pdf_url;
     document.querySelector('.step[data-step="2"]').classList.add('active');
     // scroll
@@ -254,13 +355,20 @@ $('btnSend').addEventListener('click', async ()=>{
   }
   // smtp_pass peut être vide si smtp_secure = none (test local)
   if(!$('lettre_template').value.trim()){
-    // auto générer
-    const data=collectFormData();
-    try{
-      const r=await fetch('/api/generate-letter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-      const j=await r.json();
-      $('lettre_template').value=j.template;
-    }catch(e){ alert('Impossible de générer la lettre'); return; }
+    if(letterMode==='auto'){
+      // en mode auto on régénère si vide
+      const data=collectFormData();
+      try{
+        const r=await fetch('/api/generate-letter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+        const j=await r.json();
+        $('lettre_template').value=j.template;
+      }catch(e){ alert('Impossible de générer la lettre'); return; }
+    } else {
+      alert('En mode « Ma propre lettre », écris ou importe ta lettre avant d\'envoyer.');
+      setLetterMode('custom');
+      $('lettre_template').focus();
+      return;
+    }
   }
 
   const btn=$('btnSend');
