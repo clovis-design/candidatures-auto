@@ -4,6 +4,8 @@ import smtplib
 import ssl
 import time
 import uuid
+import math
+import threading
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -11,19 +13,36 @@ from email.mime.application import MIMEApplication
 from email.utils import formatdate
 from pathlib import Path
 
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, g
 from werkzeug.utils import secure_filename
 from fpdf import FPDF
 import json
 import unicodedata
 from io import BytesIO
+from tracking import TrackingStore, STATUSES
+from spreadsheets import EMAIL, read_excel, read_csv, update_workbook, write_text
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB
-UPLOAD_FOLDER = Path("uploads")
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_FOLDER = BASE_DIR / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
-GENERATED_FOLDER = Path("generated")
+GENERATED_FOLDER = BASE_DIR / "generated"
 GENERATED_FOLDER.mkdir(exist_ok=True)
+DATA_FOLDER = BASE_DIR / 'data'
+DATA_FOLDER.mkdir(exist_ok=True)
+app.config['TRACKING_DB'] = os.environ.get('TRACKING_DB', str(DATA_FOLDER / 'applications.sqlite3'))
+send_lock = threading.Lock()
+jobs = {}
+
+
+def store():
+    return TrackingStore(app.config['TRACKING_DB'])
+
+
+@app.errorhandler(413)
+def file_too_large(error):
+    return jsonify({'error': 'La taille totale des fichiers est limitée à 10 Mo.'}), 413
 
 ALLOWED_EXTENSIONS = {'.pdf', '.doc', '.docx'}
 
@@ -43,7 +62,8 @@ EXCEL_HEADERS = [
     "Nom de l'interlocuteur",
     "Coordonnées de l'interlocuteur (tel, @)",
     "Date d'un éventuel entretien",
-    "Résultats de la démarche (en attente de réponse, doit rappeler, rdv fixé, étude de la candidature, etc.)"
+    "Résultats de la démarche (en attente de réponse, doit rappeler, rdv fixé, étude de la candidature, etc.)",
+    "Date relance", "Notes"
 ]
 
 def strip_accents(s):
@@ -86,7 +106,7 @@ def create_suivi_excel(entries, poste_global="", type_default="Candidature spont
     ws = wb.active
     ws.title = "Suivi Candidatures"
     # Lignes 1-3 : Titre + consigne
-    ws.merge_cells('A1:H1')
+    ws.merge_cells('A1:J1')
     c1 = ws['A1']
     c1.value = "Suivi des candidatures — Généré par Candidatures Auto"
     c1.font = Font(name='Calibri', size=13, bold=True, color="FFFFFF")
@@ -111,32 +131,35 @@ def create_suivi_excel(entries, poste_global="", type_default="Candidature spont
         cell.border = border
     ws.row_dimensions[4].height = 36
     # Largeurs colonnes
-    widths = [16, 22, 24, 22, 20, 26, 16, 30]
+    widths = [16, 22, 24, 22, 20, 26, 16, 30, 16, 40]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     ws.freeze_panes = "A5"
-    ws.auto_filter.ref = f"A4:H4"
+    ws.auto_filter.ref = f"A4:J{max(4, len(entries) + 4)}"
     # Données dès ligne 5
     today = datetime.now().strftime("%d/%m/%Y")
     for row_idx, entry in enumerate(entries, start=5):
         email = entry.get("email","")
-        entreprise = entry.get("entreprise") or extract_company_name(email) if email else ""
+        entreprise = entry.get("entreprise") or (extract_company_name(email) if email else "")
         # Si entreprise vide (generic) -> laisser vide ou email domain?
         if entreprise == "votre entreprise":
             entreprise = ""
         stage = entry.get("stage") or poste_global or ""
         # Colonnes - Date envoi = date du jour (jj/mm/aaaa), interlocuteur/entretien = "aucun" par défaut si vide
-        ws.cell(row=row_idx, column=1, value=today).alignment = Alignment(horizontal='center')
+        ws.cell(row=row_idx, column=1, value=entry.get('date_envoi', '')).alignment = Alignment(horizontal='center')
         ws.cell(row=row_idx, column=2, value=entreprise)
         ws.cell(row=row_idx, column=3, value=entry.get("type_candidature") or type_default)
         ws.cell(row=row_idx, column=4, value=stage)
-        ws.cell(row=row_idx, column=5, value=entry.get("interlocuteur") or "aucun")
-        ws.cell(row=row_idx, column=6, value=email)  # Coordonnées = email (tel peut être ajouté manuellement)
-        ws.cell(row=row_idx, column=7, value=entry.get("date_entretien") or "aucun")
-        ws.cell(row=row_idx, column=8, value=entry.get("resultats") or "en attente")
+        ws.cell(row=row_idx, column=5, value=entry.get("interlocuteur") or "")
+        ws.cell(row=row_idx, column=6, value=entry.get('coordonnees') or email)
+        ws.cell(row=row_idx, column=7, value=entry.get("date_entretien") or "")
+        ws.cell(row=row_idx, column=8, value=entry.get("resultats") or "À envoyer")
+        ws.cell(row=row_idx, column=9, value=entry.get('follow_up_date', ''))
+        ws.cell(row=row_idx, column=10, value=entry.get('notes', ''))
         # Style lignes données
-        for col in range(1, 9):
+        for col in range(1, 11):
             c = ws.cell(row=row_idx, column=col)
+            write_text(c, c.value)
             c.font = Font(name='Calibri', size=9)
             c.alignment = Alignment(vertical='center', wrap_text=True, horizontal='center' if col in (1,7) else 'left')
             c.border = border
@@ -155,98 +178,7 @@ def create_suivi_excel(entries, poste_global="", type_default="Candidature spont
     return out
 
 def parse_suivi_excel(file_stream):
-    """Parse un Excel suivi : headers ligne 4, données dès ligne 5. Retourne (entries, invalid_rows)"""
-    import openpyxl
-    wb = openpyxl.load_workbook(file_stream, data_only=True, read_only=False)
-    ws = wb.active
-    # Détecter headers ligne 4
-    headers = []
-    col_map = {}  # col_idx -> key
-    max_col = min(ws.max_column, len(EXCEL_HEADERS)+2)
-    for col in range(1, max_col+1):
-        val = ws.cell(row=4, column=col).value
-        if val:
-            norm = normalize_header(val)
-            key = HEADER_KEYS.get(norm)
-            # fallback fuzzy: si contient "entreprise" etc.
-            if not key:
-                if "entreprise" in norm:
-                    key = "entreprise"
-                elif "coordonn" in norm:
-                    key = "coordonnees"
-                elif "stage" in norm:
-                    key = "stage"
-                elif "interlocuteur" in norm and "coordonn" not in norm:
-                    key = "interlocuteur"
-                elif "resulta" in norm:
-                    key = "resultats"
-                elif "entretien" in norm:
-                    key = "date_entretien"
-                elif "envoi" in norm:
-                    key = "date_envoi"
-                elif "candidature" in norm and "offre" in norm:
-                    key = "type_candidature"
-            if key:
-                col_map[col] = key
-            headers.append((col, val, key))
-    if not col_map:
-        # Fallback : supposer ordre fixe EXCEL_HEADERS
-        for i in range(1, len(EXCEL_HEADERS)+1):
-            # Map par position
-            keys_order = ["date_envoi","entreprise","type_candidature","stage","interlocuteur","coordonnees","date_entretien","resultats"]
-            col_map[i] = keys_order[i-1]
-    entries = []
-    invalid_rows = []
-    email_regex = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
-    for row in range(5, ws.max_row+1):
-        # Vérifier si ligne vide
-        is_empty = True
-        row_data = {}
-        for col, key in col_map.items():
-            v = ws.cell(row=row, column=col).value
-            if v is not None and str(v).strip() != "":
-                is_empty = False
-            row_data[key] = str(v).strip() if v is not None else ""
-        if is_empty:
-            continue
-        # Extraire email depuis coordonnees
-        coord = row_data.get("coordonnees","")
-        m = email_regex.search(coord or "")
-        email = m.group(0).lower() if m else ""
-        # Si pas d'email dans coordonnees, chercher dans toute la ligne
-        if not email:
-            for v in row_data.values():
-                mm = email_regex.search(v or "")
-                if mm:
-                    email = mm.group(0).lower()
-                    break
-        if not email:
-            invalid_rows.append({"row": row, "reason": "Aucun email trouvé en colonne Coordonnées", "data": row_data})
-            continue
-        entreprise = row_data.get("entreprise","").strip()
-        if not entreprise:
-            entreprise = extract_company_name(email)
-            if entreprise == "votre entreprise":
-                entreprise = ""
-        entries.append({
-            "email": email,
-            "entreprise": entreprise,
-            "stage": row_data.get("stage",""),
-            "type_candidature": row_data.get("type_candidature",""),
-            "interlocuteur": row_data.get("interlocuteur",""),
-            "coordonnees": coord,
-            "date_envoi": row_data.get("date_envoi",""),
-            "date_entretien": row_data.get("date_entretien",""),
-            "resultats": row_data.get("resultats",""),
-        })
-    # Dédup par email
-    seen = {}
-    uniq = []
-    for e in entries:
-        if e["email"] not in seen:
-            seen[e["email"]] = True
-            uniq.append(e)
-    return uniq, invalid_rows, headers
+    return read_excel(file_stream, HEADER_KEYS, normalize_header, extract_company_name)
 
 def parse_entries(raw_text):
     """
@@ -263,8 +195,8 @@ def parse_entries(raw_text):
     """
     if not raw_text or not raw_text.strip():
         return [], []
-    email_regex = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
-    full_email_regex = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
+    email_regex = EMAIL
+    full_email_regex = re.compile('^' + EMAIL.pattern + '$')
     entries = []
     invalid = []
 
@@ -354,7 +286,7 @@ def generate_letter_content(data):
     """
     prenom = data.get('prenom', '').strip() or '[Prénom]'
     nom = data.get('nom', '').strip() or '[Nom]'
-    poste = data.get('poste', '').strip() or 'le poste proposé'
+    poste = '{POSTE}'
     entreprise_placeholder = data.get('entreprisePlaceholder', 'votre entreprise')
     ville = data.get('ville', '').strip()
     telephone = data.get('telephone', '').strip()
@@ -453,8 +385,31 @@ def extract_company_name(email):
     except:
         return "votre entreprise"
 
+# La police PDF de base (Helvetica) ne supporte que latin-1 : on convertit
+# les caractères Unicode courants (apostrophes/guilemets typographiques, tirets, …)
+# souvent collés depuis Word/téléphone, sinon FPDFUnicodeEncodingException.
+PDF_REPLACEMENTS = {
+    "\u2019": "'", "\u2018": "'", "\u02bc": "'",
+    "\u201c": '"', "\u201d": '"', "\u00ab": '"', "\u00bb": '"',
+    "\u2013": "-", "\u2014": "-", "\u2212": "-",
+    "\u2026": "...", "\u00a0": " ", "\u202f": " ", "\u2009": " ",
+    "\u0153": "oe", "\u0152": "OE", "\u2022": "-", "\u25cf": "-",
+    "\u20ac": "EUR",
+}
+
+def sanitize_for_pdf(text):
+    if not text:
+        return ""
+    text = str(text)
+    for k, v in PDF_REPLACEMENTS.items():
+        text = text.replace(k, v)
+    # Tout ce qui reste hors latin-1 -> '?' plutôt que crash
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
 def create_pdf_letter(content_text, output_path, candidat_infos):
     """ Génère un PDF lettre avec fpdf2 """
+    candidat_infos = {k: sanitize_for_pdf(v) for k, v in (candidat_infos or {}).items()}
+    content_text = sanitize_for_pdf(content_text)
     pdf = FPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -510,7 +465,7 @@ def api_generate_letter():
     personnalise = data.get('personnalise', False)
 
     # Pour la preview, on montre avec le placeholder remplacé par "votre entreprise"
-    preview = lettre_template.replace("{ENTREPRISE_NOM}", data.get('entreprisePlaceholder') or "votre entreprise")
+    preview = apply_letter_placeholders(lettre_template, data.get('entreprisePlaceholder') or 'votre entreprise', data['poste'], data)
 
     # Génération PDF preview
     preview_path = GENERATED_FOLDER / f"lettre_preview_{uuid.uuid4().hex[:8]}.pdf"
@@ -532,20 +487,73 @@ def serve_generated(filename):
 
 @app.route("/api/send", methods=["POST"])
 def api_send():
+    if not send_lock.acquire(blocking=False):
+        return jsonify({'error': 'Une campagne est déjà en cours. Consultez sa progression.'}), 409
+    try:
+        g.send_cleanup = []
+        return send_campaign()
+    except Exception:
+        app.logger.exception('Campagne interrompue')
+        return jsonify({'error': 'Campagne interrompue. Consultez l’historique avant de reprendre les envois.'}), 500
+    finally:
+        for cleanup in getattr(g, 'send_cleanup', []):
+            try:
+                cleanup()
+            except Exception:
+                app.logger.exception('Nettoyage de campagne impossible')
+        campaign_id = getattr(g, 'campaign_id', None)
+        if campaign_id in jobs:
+            jobs[campaign_id]['done'] = True
+        send_lock.release()
+
+
+def connect_smtp(host, port, user, password, secure):
+    if secure not in ('ssl', 'tls', 'none') or not 1 <= int(port) <= 65535:
+        raise ValueError('Port ou sécurité SMTP invalide')
+    server = None
+    try:
+        if secure == 'ssl':
+            server = smtplib.SMTP_SSL(host, int(port), context=ssl.create_default_context(), timeout=15)
+        else:
+            server = smtplib.SMTP(host, int(port), timeout=15)
+            if secure == 'tls':
+                server.starttls(context=ssl.create_default_context())
+        if user and password:
+            server.login(user, password)
+        return server
+    except Exception:
+        if server:
+            server.close()
+        raise
+
+
+def send_campaign():
     # multipart/form-data
     # fields: smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure, from_name, subject, message, emails_text, lettre_template, candidat infos...
     smtp_host = request.form.get('smtp_host', '').strip()
     smtp_port = request.form.get('smtp_port', '').strip()
     smtp_user = request.form.get('smtp_user', '').strip()
-    smtp_pass = request.form.get('smtp_pass', '').strip()
+    smtp_pass = request.form.get('smtp_pass', '')
     smtp_secure = request.form.get('smtp_secure', 'tls')  # tls, ssl, none
     from_name = request.form.get('from_name', '').strip() or f"{request.form.get('prenom','')} {request.form.get('nom','')}"
     subject = request.form.get('subject', '').strip() or f"Candidature - {request.form.get('poste','')}"
     message_body = request.form.get('message_body', '').strip()
     emails_text = request.form.get('emails_text', '')
     lettre_template = request.form.get('lettre_template', '')
-    poste = request.form.get('poste', '')
-    delay = float(request.form.get('delay', '1.5') or 1.5)
+    poste = request.form.get('poste', '').strip()
+    try:
+        delay = float(request.form.get('delay', '1.5'))
+        follow_up_days = int(request.form.get('follow_up_days', '7'))
+        if not math.isfinite(delay) or not 0 <= delay <= 60 or not 1 <= follow_up_days <= 90:
+            raise ValueError()
+        if not 1 <= int(smtp_port) <= 65535:
+            raise ValueError()
+    except ValueError:
+        return jsonify({'error': 'Port, délai (0–60 s) ou relance (1–90 jours) invalide.'}), 400
+    if any('\n' in value or '\r' in value for value in (smtp_user, from_name, subject)):
+        return jsonify({'error': 'Les en-têtes email doivent tenir sur une ligne.'}), 400
+    if not all(request.form.get(key, '').strip() for key in ('prenom', 'nom', 'poste')):
+        return jsonify({'error': 'Prénom, nom et poste sont requis.'}), 400
 
     # infos candidat pour PDF
     candidat_infos = {
@@ -558,10 +566,6 @@ def api_send():
 
     if not smtp_host or not smtp_port or not smtp_user:
         return jsonify({"error": "Configuration SMTP incomplète (hôte, port, utilisateur requis)"}), 400
-    # smtp_pass peut être vide pour serveurs locaux sans auth (ex: smtp dummy test)
-    if not smtp_pass and smtp_secure != 'none':
-        # on autorise quand même mais on prévient
-        pass
 
     # Parse avec noms d'entreprise si fournis - support Excel (entries enrichies depuis tableau ligne 4+)
     excel_entries_raw = request.form.get('excel_entries', '')
@@ -571,13 +575,15 @@ def api_send():
             # excel_entries doit être list of dicts avec email, entreprise, stage...
             entries = []
             invalid = []
-            email_regex = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
+            email_regex = re.compile('^' + EMAIL.pattern + '$')
             for en in excel_entries:
                 em = (en.get("email") or "").strip().lower()
                 if not em or not email_regex.match(em):
                     invalid.append(str(en))
                     continue
                 entries.append({
+                    **{key: str(en.get(key) or '').strip() for key in
+                       ('interlocuteur', 'coordonnees', 'date_entretien', 'date_envoi', 'resultats', 'notes', 'follow_up_date')},
                     "email": em,
                     "entreprise": (en.get("entreprise") or "").strip(),
                     "stage": (en.get("stage") or "").strip(),
@@ -591,7 +597,15 @@ def api_send():
         entries, invalid = parse_entries(emails_text)
         if not entries:
             return jsonify({"error": "Aucune adresse email valide fournie", "invalid": invalid}), 400
-    emails = [e["email"] for e in entries]
+    unique = {}
+    for entry in entries:
+        entry['stage'] = entry.get('stage') or poste
+        entry['entreprise'] = entry.get('entreprise') or extract_company_name(entry['email'])
+        unique.setdefault((entry['email'], entry['stage'].casefold()), entry)
+    entries = list(unique.values())
+    if len(entries) > 500:
+        return jsonify({'error': 'Une campagne est limitée à 500 candidatures.'}), 400
+    emails = [e['email'] for e in entries]
 
     # CV file
     if 'cv' not in request.files:
@@ -606,6 +620,7 @@ def api_send():
     cv_filename = secure_filename(cv_file.filename)
     cv_path = UPLOAD_FOLDER / f"{uuid.uuid4().hex}_{cv_filename}"
     cv_file.save(cv_path)
+    g.send_cleanup.append(lambda: cv_path.unlink(missing_ok=True))
 
     # Vérif lettre template
     if not lettre_template:
@@ -628,45 +643,38 @@ def api_send():
     # Options personnalisation
     personnalise = request.form.get('personnalise') == 'true'
     use_custom_names = request.form.get('useCustomNames') == 'true'
-    # Map email -> entreprise saisie manuellement
-    custom_map = {e["email"]: e["entreprise"] for e in entries if e["entreprise"]}
-
-    # Test connexion SMTP
-    try:
-        smtp_port_int = int(smtp_port)
-    except:
-        return jsonify({"error": "Port SMTP invalide"}), 400
 
     results = []
     # Connexion une fois
     server = None
     try:
-        if smtp_secure == 'ssl':
-            context = ssl.create_default_context()
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port_int, context=context, timeout=15)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port_int, timeout=15)
-            if smtp_secure == 'tls':
-                context = ssl.create_default_context()
-                server.starttls(context=context)
-        # Login seulement si identifiants fournis et serveur supporte AUTH
-        if smtp_user and smtp_pass:
-            try:
-                server.login(smtp_user, smtp_pass)
-            except smtplib.SMTPException as login_err:
-                # Si le serveur ne supporte pas AUTH (dummy local), on continue sans login
-                if "AUTH" in str(login_err):
-                    print(f"[INFO] SMTP AUTH non supporté, envoi sans authentification: {login_err}")
-                else:
-                    raise
+        server = connect_smtp(smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure)
+        g.send_cleanup.append(server.close)
     except Exception as e:
         cv_path.unlink(missing_ok=True)
         return jsonify({"error": f"Connexion SMTP échouée: {str(e)}"}), 400
 
-    # Envoi boucle
+    campaign_id = request.form.get('campaign_id') or uuid.uuid4().hex
+    g.campaign_id = campaign_id
+    # Seul le suivi public reste en mémoire ; les secrets ne sont pas conservés.
+    if len(jobs) >= 100:
+        jobs.pop(next(iter(jobs)))
+    jobs[campaign_id] = {'total': len(entries), 'results': results, 'done': False}
+    tracking = store()
     for idx, entry in enumerate(entries):
         dest = entry["email"]
+        lettre_pdf_path = None
+        record_id = None
+        delivered = False
         try:
+            date_imported = entry.get('date_envoi', '').strip().lower()
+            if date_imported and date_imported not in ('aucun', 'aucune', '-', 'non'):
+                results.append({'email': dest, 'status': 'skipped', 'reason': 'Date d’envoi déjà renseignée dans le tableur.'})
+                continue
+            record_id = tracking.reserve(entry)
+            if record_id is None:
+                results.append({'email': dest, 'status': 'skipped', 'reason': 'Candidature déjà envoyée ou en cours pour ce poste.'})
+                continue
             # Génération lettre personnalisée
             if not personnalise:
                 entreprise_nom = "votre entreprise"
@@ -696,9 +704,7 @@ def api_send():
             msg['To'] = dest
             msg['Date'] = formatdate(localtime=True)
             # Sujet : personnalise {ENTREPRISE} et aussi poste si différent par ligne
-            subj = subject
-            if "{ENTREPRISE}" in subj:
-                subj = subj.replace("{ENTREPRISE}", entreprise_nom)
+            subj = apply_letter_placeholders(subject, entreprise_nom, poste_entry, candidat_infos)
             if poste and poste_entry != poste and poste in subj:
                 subj = subj.replace(poste, poste_entry)
             msg['Subject'] = subj
@@ -718,7 +724,7 @@ Cordialement,
 {candidat_infos['emailCandidat']}
 """
             # Remplacer placeholders entreprise + poste par ligne
-            body_text = body_text.replace("{ENTREPRISE}", entreprise_nom)
+            body_text = apply_letter_placeholders(body_text, entreprise_nom, poste_entry, candidat_infos)
             if poste and poste_entry != poste:
                 body_text = body_text.replace(poste, poste_entry)
 
@@ -736,8 +742,12 @@ Cordialement,
                 part_lettre['Content-Disposition'] = f'attachment; filename="{lettre_pdf_path.name}"'
                 msg.attach(part_lettre)
 
-            server.sendmail(smtp_user, dest, msg.as_string())
-            results.append({"email": dest, "status": "success", "entreprise": entreprise_nom})
+            refused = server.sendmail(smtp_user, dest, msg.as_string())
+            if refused:
+                raise smtplib.SMTPRecipientsRefused(refused)
+            delivered = True
+            tracking.finish(record_id, follow_up_days=follow_up_days)
+            results.append({"email": dest, "status": "success", "entreprise": entreprise_nom, 'id': record_id})
             # cleanup lettre pdf après envoi? on garde pour logs mais on peut supprimer
             lettre_pdf_path.unlink(missing_ok=True)
 
@@ -745,7 +755,19 @@ Cordialement,
                 time.sleep(delay)
 
         except Exception as e:
-            results.append({"email": dest, "status": "error", "error": str(e)})
+            # Inclut le type d'exception pour faciliter le diagnostic (ex: SMTPRecipientsRefused)
+            error = f"{type(e).__name__}: {str(e)[:300]}"
+            if record_id and not delivered:
+                try:
+                    tracking.finish(record_id, error=error)
+                except Exception:
+                    app.logger.exception('Échec de sauvegarde du résultat')
+            if delivered:
+                error = 'Email accepté par le serveur SMTP, mais suivi non confirmé. Ne pas renvoyer : vérifier la boîte d’envoi.'
+            results.append({"email": dest, "status": "error", "error": error})
+        finally:
+            if lettre_pdf_path:
+                lettre_pdf_path.unlink(missing_ok=True)
 
     try:
         server.quit()
@@ -753,6 +775,7 @@ Cordialement,
         pass
 
     cv_path.unlink(missing_ok=True)
+    jobs[campaign_id]['done'] = True
 
     success_count = sum(1 for r in results if r['status']=='success')
     failed = [r for r in results if r['status']=='error']
@@ -761,6 +784,8 @@ Cordialement,
         "total": len(emails),
         "success": success_count,
         "failed": len(failed),
+        "skipped": sum(1 for r in results if r['status'] == 'skipped'),
+        "campaign_id": campaign_id,
         "invalid_emails": invalid,
         "results": results
     })
@@ -813,11 +838,14 @@ def api_generate_excel():
     emails_text = data.get('emails_text', '')
     poste = data.get('poste', '')
     entries, invalid = parse_entries(emails_text)
+    if isinstance(data.get('entries'), list):
+        entries = [e for e in data['entries'] if isinstance(e, dict) and e.get('email')]
     if not entries:
         return jsonify({"error": "Aucune adresse email valide fournie", "invalid": invalid}), 400
-    # Enrichir avec poste global si stage vide
+    # Stage ciblé = valeur du champ Poste (input) pour toutes les lignes
+    poste = (poste or "").strip()
     for e in entries:
-        if not e.get("stage") and poste:
+        if poste and not e.get('stage'):
             e["stage"] = poste
     out = create_suivi_excel(entries, poste_global=poste)
     return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -831,10 +859,13 @@ def api_parse_excel():
     f = request.files['file']
     if f.filename == '':
         return jsonify({"error": "Fichier vide"}), 400
-    if not f.filename.lower().endswith(('.xlsx','.xlsm','.xls')):
-        return jsonify({"error": "Format non supporté, utilisez .xlsx"}), 400
+    if not f.filename.lower().endswith(('.xlsx', '.xlsm', '.csv')):
+        return jsonify({"error": "Format non supporté, utilisez .xlsx, .xlsm ou .csv (UTF-8 avec en-têtes)"}), 400
     try:
-        entries, invalid_rows, headers = parse_suivi_excel(f.stream)
+        if f.filename.lower().endswith('.csv'):
+            entries, invalid_rows, headers = read_csv(f.stream, HEADER_KEYS, normalize_header, extract_company_name)
+        else:
+            entries, invalid_rows, headers = parse_suivi_excel(f.stream)
     except Exception as e:
         return jsonify({"error": f"Erreur lecture Excel: {str(e)}"}), 400
     # Convertir en format compatible avec emails_text (pour remplir textarea)
@@ -855,8 +886,76 @@ def api_parse_excel():
         "emails": [e["email"] for e in entries]
     })
 
+
+@app.get('/api/applications')
+def api_applications():
+    records = store().all()
+    stats = {
+        'total': len(records),
+        'sent': sum(bool(r['sent_at']) for r in records),
+        'interviews': sum(r['status'] == 'interview' for r in records),
+        'due': sum(r['due'] for r in records),
+        'failed': sum(r['status'] == 'error' for r in records),
+    }
+    return jsonify({'applications': records, 'stats': stats, 'statuses': STATUSES})
+
+
+@app.patch('/api/applications/<int:record_id>')
+def api_update_application(record_id):
+    try:
+        store().update(record_id, request.get_json() or {})
+    except LookupError as error:
+        return jsonify({'error': str(error)}), 404
+    except ValueError as error:
+        return jsonify({'error': str(error)}), 400
+    return jsonify({'ok': True})
+
+
+@app.get('/api/applications/export')
+def api_export_applications():
+    output = create_suivi_excel(store().all())
+    return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True, download_name=f'suivi_candidatures_{datetime.now():%Y%m%d}.xlsx')
+
+
+@app.post('/api/update-excel')
+def api_update_excel():
+    file = request.files.get('file')
+    if not file or not file.filename.lower().endswith('.xlsx'):
+        return jsonify({'error': 'Sélectionnez un classeur .xlsx à compléter.'}), 400
+    try:
+        output, count = update_workbook(file.stream, store().all(), HEADER_KEYS, normalize_header)
+    except Exception as error:
+        return jsonify({'error': f'Impossible de compléter ce classeur : {error}'}), 400
+    response = send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                         as_attachment=True, download_name='suivi_complete.xlsx')
+    response.headers['X-Updated-Rows'] = str(count)
+    return response
+
+
+@app.get('/api/campaigns/<campaign_id>')
+def api_campaign_progress(campaign_id):
+    job = jobs.get(campaign_id)
+    if not job:
+        return jsonify({'total': 0, 'results': [], 'done': False})
+    return jsonify(job)
+
+
+@app.post('/api/test-smtp')
+def api_test_smtp():
+    data = request.get_json() or {}
+    if not data.get('smtp_host') or not data.get('smtp_user'):
+        return jsonify({'error': 'Serveur et utilisateur SMTP requis.'}), 400
+    try:
+        server = connect_smtp(data['smtp_host'], data.get('smtp_port', ''), data['smtp_user'],
+                              data.get('smtp_pass', ''), data.get('smtp_secure', 'tls'))
+        server.quit()
+    except Exception as error:
+        return jsonify({'error': f'Connexion SMTP échouée : {error}'}), 400
+    return jsonify({'message': 'Connexion et authentification réussies. Aucun email envoyé.'})
+
 if __name__ == "__main__":
     print("→ Serveur candidature-auto sur http://localhost:5000")
     # debug=False pour stabilité en production, use_reloader désactivé pour éviter double process
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host="0.0.0.0", port=5000, debug=debug, use_reloader=debug)
+    app.run(host=os.environ.get('HOST', '127.0.0.1'), port=int(os.environ.get('PORT', '5000')), debug=debug, use_reloader=debug)

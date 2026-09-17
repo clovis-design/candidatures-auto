@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Candidatures Auto • Envoi massif CV + Lettre</title>
+<title>Candidatures Auto — Votre espace de candidature</title>
 <link rel="stylesheet" href="/static/css/style.css">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
@@ -17,22 +17,45 @@
         <p>Envoi automatique CV + lettre de motivation personnalisée</p>
       </div>
     </div>
-    <div class="badge">⚡ 100% automatisé</div>
+    <nav class="workspace-nav" aria-label="Espace de travail">
+      <button class="nav-btn active" id="navCompose" aria-pressed="true">Nouvelle campagne</button>
+      <button class="nav-btn" id="navTracking" aria-pressed="false">Mes candidatures <span id="historyCount">0</span></button>
+    </nav>
   </div>
 </header>
 
 <main class="wrap">
-  <div class="steps">
-    <div class="step active" data-step="1"><span>1</span> Profil & CV</div>
-    <div class="step" data-step="2"><span>2</span> Lettre</div>
-    <div class="step" data-step="3"><span>3</span> Entreprises</div>
-    <div class="step" data-step="4"><span>4</span> Envoi</div>
+  <section class="hero">
+    <div><p class="eyebrow">VOTRE PROCHAINE OPPORTUNITÉ COMMENCE ICI</p>
+      <h2>Moins de répétition.<br><span>Plus de possibilités.</span></h2>
+      <p>Des candidatures personnalisées, un envoi automatisé et un suivi qui reste à jour.</p>
+    </div>
+    <div class="hero-note"><span class="live-dot"></span> Votre espace local
+      <small>CV + lettre personnalisée<br>Suivi Excel connecté aux envois</small>
+    </div>
+  </section>
+  <section class="stats-grid" aria-label="Statistiques des candidatures">
+    <button class="stat-card" data-filter=""><span>Candidatures envoyées</span><strong id="statSent">0</strong><small>Enregistrées dans votre historique</small></button>
+    <button class="stat-card" data-filter="interview"><span>Entretiens</span><strong id="statInterviews">0</strong><small>Vos prochaines opportunités</small></button>
+    <button class="stat-card" data-filter="due"><span>À relancer</span><strong id="statDue">0</strong><small>Échéance atteinte, sans réponse</small></button>
+    <button class="stat-card" data-filter="error"><span>Envois à reprendre</span><strong id="statFailed">0</strong><small>Les échecs peuvent être réessayés</small></button>
+  </section>
+  <div id="workspaceMessage" class="workspace-message hidden" role="status"></div>
+  <div id="composePanel">
+  <div class="section-heading"><div><p class="eyebrow">NOUVELLE CAMPAGNE</p><h2>Préparez votre prochain départ</h2></div><span id="draftStatus" class="draft-status" role="status">Brouillon enregistré sur ce navigateur</span></div>
+  <div class="steps" aria-label="Étapes de préparation">
+    <a href="#profileSection" class="step active" data-step="1"><span>1</span> Profil & CV</a>
+    <a href="#letterSection" class="step" data-step="2"><span>2</span> Lettre</a>
+    <a href="#recipientsSection" class="step" data-step="3"><span>3</span> Entreprises</a>
+    <a href="#sendingSection" class="step" data-step="4"><span>4</span> Envoi</a>
   </div>
 
   <div class="grid">
     <!-- Colonne gauche : Formulaire -->
-    <div class="card">
-      <h2>👤 Vos informations</h2>
+    <div class="card form-card">
+      <section id="profileSection" class="form-section">
+      <div class="section-number">01 / VOTRE PROFIL</div>
+      <h2>Faisons les présentations</h2>
       <p class="hint">Ces infos serviront à générer la lettre et le mail.</p>
 
       <div class="row2">
@@ -48,7 +71,7 @@
 
       <div class="row2">
         <div class="field">
-          <label>Email candidat *</label>
+          <label>Email candidat</label>
           <input id="emailCandidat" type="email" placeholder="ines.dupont@email.com">
         </div>
         <div class="field">
@@ -94,7 +117,7 @@
 
       <div class="field">
         <label>📎 Votre CV (PDF, DOC, DOCX) *</label>
-        <div class="dropzone" id="dropzone">
+        <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Choisir votre CV">
           <input type="file" id="cv" accept=".pdf,.doc,.docx" hidden>
           <div class="dz-icon">📄</div>
           <p><b>Glisser-déposer</b> ou <span class="link">parcourir</span></p>
@@ -108,10 +131,11 @@
         <small>Le nom de l'entreprise sera extrait automatiquement de l'email (ex: contact@capgemini.fr → Capgemini) et injecté dans la lettre.</small>
       </div>
 
-      <hr>
-
-      <h2>✍️ Lettre de motivation</h2>
-      <div class="mode-switch" role="tablist" aria-label="Mode lettre">
+      </section>
+      <section id="letterSection" class="form-section">
+      <div class="section-number">02 / VOTRE LETTRE</div>
+      <h2>Les bons mots, pour chaque entreprise</h2>
+      <div class="mode-switch" role="group" aria-label="Mode lettre">
         <button type="button" id="modeAuto" class="mode-btn active">⚡ Auto (générée)</button>
         <button type="button" id="modeCustom" class="mode-btn">✍️ Ma propre lettre</button>
       </div>
@@ -157,9 +181,10 @@
         </div>
       </div>
 
-      <hr>
-
-      <h2>🏢 Liste des entreprises</h2>
+      </section>
+      <section id="recipientsSection" class="form-section">
+      <div class="section-number">03 / VOS DESTINATAIRES</div>
+      <h2>À qui souhaitez-vous écrire ?</h2>
       <div class="field">
         <label>Adresses email (une par ligne) *</label>
         <textarea id="emails_text" rows="8" placeholder="rh@capgemini.fr&#10;Capgemini &lt;rh@capgemini.fr&gt;&#10;Dassault Systemes | jobs@dassault.com&#10;Thales ; recrutement@thalesgroup.com&#10;toto@gmail.com | Mon Entreprise Cible&#10;contact@orange.fr"></textarea>
@@ -179,7 +204,7 @@
           <div style="display:flex;align-items:center;gap:10px">
             <span class="toggle-status off" id="customNamesStatus">OFF</span>
             <label class="switch">
-              <input type="checkbox" id="useCustomNames">
+              <input type="checkbox" id="useCustomNames" checked aria-label="Utiliser les noms d’entreprises saisis">
               <span class="slider"></span>
             </label>
           </div>
@@ -208,26 +233,29 @@
 
       <div class="field">
         <label>Ou importer un fichier Excel / CSV / TXT</label>
-        <input type="file" id="csvImport" accept=".xlsx,.xls,.csv,.txt">
-        <small>Excel : headers en ligne 4 (Date envoi, Entreprise, Type, Stage, Interlocuteur, Coordonnées, Date entretien, Résultats) → données dès ligne 5. CSV : <code>Entreprise;email</code>. Le tableau se remplira automatiquement.</small>
+        <input type="file" id="csvImport" accept=".xlsx,.xlsm,.csv,.txt">
+        <small>Excel ou CSV UTF-8 avec colonnes Email / Coordonnées, Entreprise, Poste… En-têtes détectés dans les 20 premières lignes. Modèle historique en ligne 4 également accepté. TXT : une adresse par ligne.</small>
         <div class="excel-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
-          <button class="btn small ghost" id="btnTemplateExcel" type="button">📥 Télécharger modèle Excel vide (ligne 4)</button>
-          <button class="btn small primary" id="btnGenerateExcel" type="button">📊 Générer Excel de suivi à partir de ma liste d'emails → remplit le tableau ligne 5+</button>
+          <button class="btn small ghost" id="btnTemplateExcel" type="button">Télécharger un modèle</button>
+          <button class="btn small primary" id="btnGenerateExcel" type="button">Exporter cette liste en Excel</button>
         </div>
-        <div id="excelInfo" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+        <div id="excelInfo" style="font-size:12px;color:var(--muted);margin-top:6px" role="status"></div>
+        <p class="hint">Une date d’envoi déjà renseignée exclut la ligne de l’envoi. Si elle provient d’un ancien brouillon, vous pouvez la vider dans l’aperçu. Les candidatures déjà envoyées depuis cette application restent protégées contre les doublons.</p>
         <div id="excelPreview" class="hidden" style="margin-top:10px;overflow:auto;border:1px solid var(--border);border-radius:10px;max-height:320px">
           <table id="previewTable" style="width:100%;font-size:11px;border-collapse:collapse"></table>
           <div id="previewStats" style="padding:8px;font-size:11px;color:var(--muted);border-top:1px solid var(--border);background:#f8fafc"></div>
         </div>
       </div>
 
-      <hr>
-
-      <h2>📧 Configuration d'envoi & message</h2>
+      </section>
+      <section id="sendingSection" class="form-section">
+      <div class="section-number">04 / LE DÉPART</div>
+      <h2>Un message qui vous ressemble</h2>
       <div class="alert info">
         <b>Comment envoyer ?</b> Utilisez votre adresse Gmail avec un <b>mot de passe d'application</b> (recommandé) ou tout SMTP (Outlook, OVH, etc.). <a href="https://myaccount.google.com/apppasswords" target="_blank">Créer un mot de passe d'application Gmail →</a>
       </div>
 
+      <div class="field"><label for="smtpPreset">Configuration rapide</label><select id="smtpPreset"><option value="">Choisir un fournisseur…</option><option value="gmail">Gmail</option><option value="outlook">Outlook / Microsoft 365</option><option value="ovh">OVH</option><option value="local">Serveur de test local</option></select></div>
       <div class="row2">
         <div class="field">
           <label>Serveur SMTP *</label>
@@ -263,11 +291,12 @@
         <label>Nom d'expéditeur</label>
         <input id="from_name" placeholder="Ex: Inès Dupont">
       </div>
+      <div class="smtp-test"><button class="btn ghost" id="btnTestSmtp">Tester la connexion SMTP</button><span id="smtpTestResult" role="status"></span></div>
 
       <div class="field">
         <label>Objet de l'email *</label>
         <input id="subject" placeholder="Candidature - {ENTREPRISE} - Poste de ...">
-        <small>Utilisez <code>{ENTREPRISE}</code> pour personnaliser l'objet. Laissez vide pour objet automatique.</small>
+        <small>Variables : <code>{ENTREPRISE}</code>, <code>{POSTE}</code>, <code>{PRENOM}</code>, <code>{NOM}</code>. Objet automatique si vide.</small>
       </div>
 
       <div class="field">
@@ -281,24 +310,31 @@ Veuillez trouver ci-joint ma candidature...
 
       <div class="field">
         <label>Délai entre 2 envois (secondes)</label>
-        <input id="delay" type="number" min="0" step="0.5" value="1.5">
+        <input id="delay" type="number" min="0" max="60" step="0.5" value="1.5">
         <small>Pour éviter d'être marqué comme spam, gardez ≥1s.</small>
       </div>
 
-      <button class="btn send full" id="btnSend">🚀 Envoyer à toutes les entreprises</button>
-      <p class="hint center">Envoi sécurisé • CV + lettre en pièces jointes • Suivi en temps réel</p>
+      <div class="field"><label for="follow_up_days">Rappel de relance après l’envoi</label><select id="follow_up_days"><option value="3">3 jours</option><option value="7" selected>7 jours</option><option value="14">14 jours</option><option value="30">30 jours</option></select><small>Le tableau de bord signalera les candidatures à relancer. Aucun email de relance automatique.</small></div>
+      <button class="btn send full" id="btnSend">Lancer les candidatures →</button>
+      <p class="hint center">CV + lettre joints · Historique enregistré · Doublons déjà envoyés ignorés</p>
+      </section>
     </div>
 
     <!-- Colonne droite : Logs & aide -->
     <div class="side">
       <div class="card sticky">
-        <h3>📊 Progression</h3>
+        <p class="eyebrow">VOTRE CAMPAGNE</p>
+        <h3>Tout est prêt ?</h3>
+        <ul id="readiness" class="readiness"></ul>
+        <hr>
+        <h3>Progression des envois</h3>
         <div class="progress-wrap">
           <div class="progress-bar"><div id="progress" style="width:0%"></div></div>
-          <div id="progressText" class="progress-text">En attente d'envoi</div>
+          <div id="progressText" class="progress-text" role="status">En attente d'envoi</div>
         </div>
         <div id="results" class="results"></div>
         <div id="summary" class="summary hidden"></div>
+        <a class="btn ghost full export-link" href="/api/applications/export">Télécharger le suivi Excel ↗</a>
       </div>
 
       <div class="card help">
@@ -321,10 +357,37 @@ Veuillez trouver ci-joint ma candidature...
       </div>
     </div>
   </div>
+  </div>
+  <section id="trackingPanel" class="hidden">
+    <div class="section-heading"><div><p class="eyebrow">VOTRE SUIVI</p><h2>Chaque candidature, une prochaine étape</h2></div><button id="btnRefreshHistory" class="btn ghost">Actualiser</button></div>
+    <div class="card tracking-card">
+      <div class="tracking-toolbar">
+        <div class="field"><label for="historySearch">Rechercher</label><input type="search" id="historySearch" placeholder="Entreprise, poste, email…"></div>
+        <div class="field"><label for="historyFilter">Statut</label><select id="historyFilter"><option value="">Tous les statuts</option><option value="sent">En attente de réponse</option><option value="due">Relance arrivée à échéance</option><option value="follow_up">À relancer</option><option value="interview">Entretien</option><option value="accepted">Acceptée</option><option value="rejected">Refusée</option><option value="error">Échec d’envoi</option><option value="sending">Envoi en cours</option></select></div>
+        <a class="btn primary" href="/api/applications/export">Exporter le suivi Excel ↗</a>
+      </div>
+      <div class="table-scroll"><table class="history-table"><thead><tr><th>Entreprise / contact</th><th>Poste</th><th>Envoyée le</th><th>Statut</th><th>Prochaine relance</th><th>Action</th></tr></thead><tbody id="historyBody"></tbody></table></div>
+      <div id="historyEmpty" class="empty-state"><div class="empty-icon">↗</div><h3>Votre prochaine opportunité vous attend</h3><p>Vos candidatures apparaîtront ici au fil des envois.<br>Dates, résultats et rappels seront renseignés automatiquement.</p><button id="btnFirstCampaign" class="btn primary">Préparer une campagne</button></div>
+      <p id="historyStats" class="hint"></p>
+    </div>
+    <div class="card workbook-card"><div><h3>Vous avez déjà votre propre tableur ?</h3><p class="hint">Importez votre fichier .xlsx : les dates, statuts, entretiens, relances et notes seront complétés depuis l’historique. Les autres cellules et feuilles sont conservées dans la copie téléchargée.</p></div><label class="btn ghost">Compléter mon tableur<input type="file" id="updateWorkbook" accept=".xlsx" hidden></label></div>
+  </section>
 </main>
 
-<footer class="footer">Fait avec ❤️ — Candidatures Auto • Vos données ne quittent pas votre machine sauf pour l'envoi SMTP</footer>
+<dialog id="editApplication" class="edit-dialog">
+  <form id="trackingForm">
+    <div class="section-heading"><h2 id="editTitle">Suivi de candidature</h2><button type="button" id="closeEdit" class="btn ghost" aria-label="Fermer">×</button></div>
+    <p id="editContact" class="hint"></p>
+    <div class="row2"><div class="field"><label for="editStatus">Statut</label><select id="editStatus"><option value="sent">En attente de réponse</option><option value="follow_up">À relancer</option><option value="interview">Entretien</option><option value="accepted">Acceptée</option><option value="rejected">Refusée</option></select></div><div class="field"><label for="editFollowUp">Date de relance</label><input type="date" id="editFollowUp"></div></div>
+    <div class="row2"><div class="field"><label for="editInterview">Date d’entretien</label><input type="date" id="editInterview"></div><div class="field"><label for="editInterlocuteur">Interlocuteur</label><input id="editInterlocuteur"></div></div>
+    <div class="field"><label for="editNotes">Notes</label><textarea id="editNotes" rows="4" placeholder="Retour du recruteur, questions, prochaine action…"></textarea></div>
+    <p id="editError" class="invalid" role="alert"></p><button class="btn primary full" id="saveTracking" type="submit">Enregistrer le suivi</button>
+  </form>
+</dialog>
+
+<footer class="footer">Candidatures Auto · Un peu moins d’administratif, un peu plus d’avenir.<br>Historique sur cette machine · Brouillon dans ce navigateur · Mot de passe SMTP non sauvegardé</footer>
 
 <script src="/static/js/app.js"></script>
+<script src="/static/js/workspace.js"></script>
 </body>
 </html>

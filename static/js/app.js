@@ -1,9 +1,12 @@
 const $ = id => document.getElementById(id);
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const dropzone = $('dropzone');
 const cvInput = $('cv');
 const cvInfo = $('cvInfo');
 
 dropzone.addEventListener('click', ()=> cvInput.click());
+cvInput.addEventListener('click', e => e.stopPropagation());
+dropzone.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); cvInput.click(); } });
 dropzone.addEventListener('dragover', e=>{e.preventDefault(); dropzone.classList.add('drag')});
 dropzone.addEventListener('dragleave', ()=> dropzone.classList.remove('drag'));
 dropzone.addEventListener('drop', e=>{
@@ -14,7 +17,11 @@ cvInput.addEventListener('change', updateCVInfo);
 function updateCVInfo(){
   if(cvInput.files[0]){
     const f=cvInput.files[0];
+    if(!/\.(pdf|docx?)$/i.test(f.name) || f.size > 10 * 1024 * 1024){
+      cvInput.value=''; cvInfo.textContent='Choisissez un PDF, DOC ou DOCX de moins de 10 Mo.'; return;
+    }
     cvInfo.textContent = `✓ ${f.name} (${(f.size/1024).toFixed(1)} Ko)`;
+    document.dispatchEvent(new Event('workspacechange'));
   }
 }
 
@@ -50,65 +57,37 @@ $('csvImport').addEventListener('change', async e=>{
   if(!file) return;
   const ext=file.name.toLowerCase().split('.').pop();
   // Si Excel -> envoi au backend parse-excel (headers ligne 4 -> données ligne 5+)
-  if(['xlsx','xls','xlsm'].includes(ext)){
-    $('excelInfo').textContent='⏳ Lecture Excel (ligne 4 = en-têtes, ligne 5+ = données)...';
+  if(['xlsx','xlsm','csv'].includes(ext)){
+    $('excelInfo').textContent='Lecture du tableur et détection des colonnes…';
     const fd=new FormData(); fd.append('file', file);
     try{
-      const res=await fetch('/api/parse-excel',{method:'POST', body:fd});
-      const data=await res.json();
-      if(!res.ok) throw new Error(data.error||'Erreur');
+      let res;
+      try{
+        res=await fetch('/api/parse-excel',{method:'POST', body:fd});
+      }catch(netErr){
+        throw new Error('Serveur injoignable (Failed to fetch). Lance ./start.sh puis ouvre http://localhost:5000.');
+      }
+      let data;
+      try{ data=await res.json(); }
+      catch(e){ throw new Error('Réponse serveur invalide (HTTP '+res.status+'). Redémarre le serveur avec ./start.sh.'); }
+      if(!res.ok) throw new Error(data.error||('Erreur '+res.status));
       // Remplit la liste d'emails à partir du tableau (le tableau se remplit depuis la liste d'emails)
       emailsText.value = data.emails_text || data.emails.join('\n');
       excelEntries = data.entries; // garde le tableau enrichi (stage etc.) pour l'envoi
       if(data.entries.some(en=>en.entreprise)) $('useCustomNames').checked=true;
+      updateCustomNamesUI();
       parseEmails();
       // Affiche preview tableau
       renderExcelPreview(data.entries, data.invalid_rows);
-      $('excelInfo').textContent=`✓ Excel importé : ${data.count} entreprises depuis ligne 5 (headers ligne 4) • ${data.invalid_rows.length} lignes invalides ignorées — le tableau est rempli, l'envoi utilisera ces infos (Entreprise, Stage ciblé, etc.)`;
+      $('excelInfo').textContent=`✓ ${data.count} candidatures importées. Vous pouvez ajuster les entreprises et postes, ou décocher des destinataires. ` + data.invalid_rows.map(r => `Ligne ${r.row} : ${r.reason}`).join(' • ');
+      document.dispatchEvent(new Event('workspacechange'));
     }catch(err){
       $('excelInfo').textContent='❌ '+err.message;
     }
     return;
   }
-  // Sinon CSV/TXT
-  const reader=new FileReader();
-  reader.onload=()=>{
-    const text=reader.result;
-    const lines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-    const re=/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
-    const out=[];
-    for(const line of lines){
-      if(!line) continue;
-      let parts = line.split(/[\t;]+/);
-      if(parts.length===1) parts=line.split(',');
-      let email=null, nom=null;
-      for(const p of parts){
-        if(re.test(p.trim())) email=p.trim().match(re)[0];
-        else if(p.trim()) nom=p.trim();
-      }
-      if(!email){
-        const m=line.match(re);
-        if(m) email=m[0];
-      }
-      if(email){
-        if(nom) out.push(`${nom} <${email}>`);
-        else {
-          if(line.includes('<') || line.includes('|')) out.push(line);
-          else out.push(email);
-        }
-      }
-    }
-    if(out.length){
-      emailsText.value = out.join('\n');
-      if(out.some(l=>l.includes('<') || l.includes('|'))) $('useCustomNames').checked=true;
-      parseEmails();
-    } else {
-      const re2=/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-      const found=text.match(re2)||[];
-      if(found.length){ emailsText.value = found.join('\n'); parseEmails(); }
-    }
-  };
-  reader.readAsText(file);
+  emailsText.value = await file.text();
+  emailsText.dispatchEvent(new Event('input', {bubbles:true}));
 });
 
 function renderExcelPreview(entries, invalid_rows){
@@ -117,18 +96,29 @@ function renderExcelPreview(entries, invalid_rows){
   const stats=$('previewStats');
   if(!entries.length){ wrap.classList.add('hidden'); return; }
   wrap.classList.remove('hidden');
-  const headers=["Entreprise","Email","Stage","Type","Interlocuteur","Résultats"];
-  let html=`<thead><tr style="background:#f1f5f9">`+headers.map(h=>`<th style="padding:6px 8px;text-align:left;border-bottom:1px solid #e2e8f0;white-space:nowrap">${h}</th>`).join('')+`</tr></thead><tbody>`;
-  entries.slice(0,20).forEach(en=>{
-    html+=`<tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px 8px">${en.entreprise||''}</td><td style="padding:6px 8px;font-family:monospace">${en.email}</td><td style="padding:6px 8px">${en.stage||''}</td><td style="padding:6px 8px">${en.type_candidature||''}</td><td style="padding:6px 8px">${en.interlocuteur||''}</td><td style="padding:6px 8px">${en.resultats||''}</td></tr>`;
+  const headers=["Inclure","Entreprise","Email","Poste ciblé","Interlocuteur","Date d’envoi / suivi"];
+  let html='<thead><tr>'+headers.map(h=>`<th>${h}</th>`).join('')+'</tr></thead><tbody>';
+  entries.forEach((en, index)=>{
+    html+=`<tr data-row="${index}" class="${en.excluded?'excluded':''}"><td><input type="checkbox" data-key="selected" aria-label="Inclure ${escapeHtml(en.email)}" ${en.excluded?'':'checked'}></td><td><input data-key="entreprise" aria-label="Entreprise ligne ${index+1}" value="${escapeHtml(en.entreprise)}"></td><td>${escapeHtml(en.email)}</td><td><input data-key="stage" aria-label="Poste ligne ${index+1}" value="${escapeHtml(en.stage)}" placeholder="Poste du profil"></td><td><input data-key="interlocuteur" aria-label="Interlocuteur ligne ${index+1}" value="${escapeHtml(en.interlocuteur)}"></td><td><input data-key="date_envoi" aria-label="Date d’envoi ligne ${index+1}" value="${escapeHtml(en.date_envoi)}" placeholder="Pas encore envoyée"><small>${escapeHtml(en.resultats||'À envoyer')}</small></td></tr>`;
   });
-  if(entries.length>20) html+=`<tr><td colspan="6" style="padding:6px 8px;text-align:center;color:#64748b">... et ${entries.length-20} autres</td></tr>`;
   html+=`</tbody>`;
   tbl.innerHTML=html;
-  let s=`${entries.length} ligne(s) lues dès ligne 5 (headers ligne 4)`;
+  let s=`${entries.filter(e=>!e.excluded).length} candidature(s) sélectionnée(s) sur ${entries.length}`;
   if(invalid_rows && invalid_rows.length) s+=` • ${invalid_rows.length} ligne(s) invalide(s) (pas d'email en colonne Coordonnées)`;
   stats.textContent=s;
 }
+
+$('previewTable').addEventListener('input', event => {
+  const input=event.target;
+  if(!input.dataset.key || !excelEntries) return;
+  const row=input.closest('tr');
+  const entry=excelEntries[Number(row.dataset.row)];
+  if(input.dataset.key==='selected') entry.excluded=!input.checked;
+  else entry[input.dataset.key]=input.value;
+  row.classList.toggle('excluded', !!entry.excluded);
+  $('previewStats').textContent=`${excelEntries.filter(e=>!e.excluded).length} candidature(s) sélectionnée(s) sur ${excelEntries.length}`;
+  document.dispatchEvent(new Event('workspacechange'));
+});
 
 // Boutons Excel : modèle vide + génération depuis liste d'emails (remplit le tableau ligne 5+)
 $('btnTemplateExcel')?.addEventListener('click', ()=>{ window.location.href='/api/excel-template'; });
@@ -140,21 +130,24 @@ $('btnGenerateExcel')?.addEventListener('click', async ()=>{
   btn.disabled=true; btn.textContent='⏳ Génération...';
   $('excelInfo').textContent='⏳ Génération du tableau (headers ligne 4, données ligne 5+) à partir de ta liste d\'emails...';
   try{
-    const res=await fetch('/api/generate-excel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({emails_text:text, poste})});
-    if(!res.ok){ const j=await res.json(); throw new Error(j.error||'Erreur'); }
+    let res;
+    try{
+      res=await fetch('/api/generate-excel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({emails_text:text, poste, ...(excelEntries ? {entries:excelEntries.filter(e=>!e.excluded)} : {})})});
+    }catch(netErr){
+      throw new Error('Serveur injoignable (Failed to fetch). Vérifie que le serveur tourne : lance ./start.sh puis ouvre http://localhost:5000 (ne pas ouvrir index.html en file://).');
+    }
+    if(!res.ok){
+      let msg='Erreur '+res.status;
+      try{ const j=await res.json(); msg=j.error||msg; }
+      catch(e){ try{ msg=await res.text(); }catch(e2){} msg=msg.slice(0,300); }
+      throw new Error(msg);
+    }
     const blob=await res.blob();
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a'); a.href=url; a.download=`suivi_candidatures_${new Date().toISOString().slice(0,10)}.xlsx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-    $('excelInfo').textContent=`✓ Excel généré : le tableau a été rempli à partir de ta liste d'emails (${text.split(/\n/).filter(s=>s.includes('@')).length} lignes dès ligne 5). Headers en ligne 4.`;
-    // Optionnel : preview
-    const entriesRes=await fetch('/api/parse-emails',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
-    const data=await entriesRes.json();
-    // Simule entries enrichies pour preview et garde pour envoi (stage par ligne) - defaults "aucun"
-    const fakeEntries=data.entries.map(en=>({email:en.email, entreprise:en.entreprise, stage:poste, type_candidature:'Candidature spontanée', interlocuteur:'aucun', resultats:'en attente', date_entretien:'aucun', date_envoi:new Date().toLocaleDateString('fr-FR')}));
-    excelEntries=fakeEntries;
-    renderExcelPreview(fakeEntries, []);
+    $('excelInfo').textContent='✓ Liste exportée. Les dates d’envoi restent vides tant que les candidatures ne sont pas envoyées. Le suivi réel se télécharge dans « Mes candidatures ».';
   }catch(err){ $('excelInfo').textContent='❌ '+err.message; }
-  finally{ btn.disabled=false; btn.textContent='📊 Générer Excel de suivi à partir de ma liste d\'emails → remplit le tableau ligne 5+'; }
+  finally{ btn.disabled=false; btn.textContent='Exporter cette liste en Excel'; }
 });
 
 async function parseEmails(){
@@ -170,6 +163,7 @@ async function parseEmails(){
       if(withName) label += ` • ${withName} avec nom saisi`;
     }
     emailCount.textContent = label;
+    document.dispatchEvent(new Event('workspacechange'));
     invalidCount.textContent = data.invalid.length? ` • ${data.invalid.length} invalide(s): ${data.invalid.slice(0,3).join(', ')}` : '';
   }catch(e){}
 }
@@ -206,6 +200,8 @@ function setLetterMode(mode){
   $('autoPanel').classList.toggle('hidden', mode!=='auto');
   $('customPanel').classList.toggle('hidden', mode!=='custom');
   $('modeLabel').textContent = mode==='auto' ? 'Auto' : 'Ma propre lettre';
+  $('modeAuto').setAttribute('aria-pressed', mode==='auto');
+  $('modeCustom').setAttribute('aria-pressed', mode==='custom');
   // Si on passe en custom et le textarea est vide, on affiche la zone de preview pour écrire
   if(mode==='custom'){
     $('letterPreview').classList.remove('hidden');
@@ -313,6 +309,7 @@ $('btnGenerate').addEventListener('click', async ()=>{
     $('letterPreview').classList.remove('hidden');
     $('previewText').textContent=j.preview;
     $('lettre_template').value=j.template;
+    document.dispatchEvent(new Event('workspacechange'));
     $('previewMode').textContent='(auto)';
     $('pdfLink').href=j.pdf_url;
     document.querySelector('.step[data-step="2"]').classList.add('active');
@@ -342,6 +339,7 @@ function collectFormData(){
 
 // Envoi
 $('btnSend').addEventListener('click', async ()=>{
+  if($('btnSend').disabled) return;
   // validations
   if(!$('prenom').value.trim() || !$('nom').value.trim() || !$('poste').value.trim()){
     alert('Profil incomplet : prénom / nom / poste requis');
@@ -349,10 +347,13 @@ $('btnSend').addEventListener('click', async ()=>{
   }
   if(!cvInput.files[0]){ alert('Veuillez ajouter votre CV'); return; }
   if(!emailsText.value.trim()){ alert('Ajoutez au moins une adresse email'); return; }
+  if(excelEntries && !excelEntries.some(e=>!e.excluded)){ alert('Sélectionnez au moins une candidature dans le tableau.'); return; }
   if(!$('smtp_host').value.trim() || !$('smtp_port').value.trim() || !$('smtp_user').value.trim()){
     alert('Configuration SMTP incomplète (hôte/port/utilisateur requis)');
     return;
   }
+  const btn=$('btnSend');
+  btn.disabled=true;
   // smtp_pass peut être vide si smtp_secure = none (test local)
   if(!$('lettre_template').value.trim()){
     if(letterMode==='auto'){
@@ -361,18 +362,18 @@ $('btnSend').addEventListener('click', async ()=>{
       try{
         const r=await fetch('/api/generate-letter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
         const j=await r.json();
+        if(!r.ok) throw new Error(j.error || 'Erreur de génération');
         $('lettre_template').value=j.template;
-      }catch(e){ alert('Impossible de générer la lettre'); return; }
+      }catch(e){ btn.disabled=false; alert('Impossible de générer la lettre : '+e.message); return; }
     } else {
       alert('En mode « Ma propre lettre », écris ou importe ta lettre avant d\'envoyer.');
       setLetterMode('custom');
       $('lettre_template').focus();
+      btn.disabled=false;
       return;
     }
   }
 
-  const btn=$('btnSend');
-  btn.disabled=true;
   const originalText=btn.textContent;
   btn.textContent='⏳ Envoi en cours... ne fermez pas la page';
 
@@ -383,6 +384,9 @@ $('btnSend').addEventListener('click', async ()=>{
   $('summary').classList.add('hidden');
 
   const fd=new FormData();
+  const campaignId=crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  fd.append('campaign_id', campaignId);
+  fd.append('follow_up_days', $('follow_up_days').value);
   fd.append('cv', cvInput.files[0]);
   fd.append('smtp_host', $('smtp_host').value.trim());
   fd.append('smtp_port', $('smtp_port').value.trim());
@@ -408,33 +412,57 @@ $('btnSend').addEventListener('click', async ()=>{
   fd.append('useCustomNames', $('useCustomNames').checked);
   fd.append('delay', $('delay').value);
   if(excelEntries && excelEntries.length){
-    fd.append('excel_entries', JSON.stringify(excelEntries));
+    fd.append('excel_entries', JSON.stringify(excelEntries.filter(e=>!e.excluded)));
   }
 
   // Pré-affichage pending - une entrée par ligne
-  const pendingEntries = emailsText.value.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.includes('@'));
+  const pendingEntries = excelEntries ? excelEntries.filter(e=>!e.excluded).map(e=>`${e.entreprise||''} <${e.email}>`) : emailsText.value.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.includes('@'));
   pendingEntries.forEach(entry=>{
     const d=document.createElement('div');
     d.className='result pending';
     // Affiche nom + email si présent
     const display = entry.length>60 ? entry.slice(0,60)+'…' : entry;
-    d.innerHTML=`<span>${display}</span><span>⏳</span>`;
+    d.innerHTML=`<span>${escapeHtml(display)}</span><span>⏳</span>`;
     resultsDiv.appendChild(d);
   });
 
+  let polling=true;
+  const poll=async ()=>{
+    try{
+      const response=await fetch(`/api/campaigns/${campaignId}`);
+      const job=await response.json();
+      if(!polling) return;
+      if(job.total){
+        $('progress').style.width=`${Math.round(job.results.length/job.total*100)}%`;
+        $('progressText').textContent=`${job.results.length} / ${job.total} candidatures traitées`;
+        resultsDiv.innerHTML=job.results.map(r=>`<div class="result ${escapeHtml(r.status)}"><span>${escapeHtml(r.email)}</span><span>${r.status==='success'?'Envoyée':r.status==='skipped'?'Ignorée':'Échec'}</span></div>`).join('');
+      }
+    }catch(error){ /* La réponse finale reste la source des résultats. */ }
+    if(polling) setTimeout(poll, 1000);
+  };
+  const firstPoll=setTimeout(poll, 500);
   try{
     const res=await fetch('/api/send',{method:'POST', body:fd});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Erreur envoi');
+    polling=false;
 
-    // update results
+    // update results (affiche le vrai message d'erreur pour diagnostic)
+    const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     resultsDiv.innerHTML='';
     data.results.forEach(r=>{
       const d=document.createElement('div');
-      d.className=`result ${r.status==='success'?'success':'error'}`;
-      d.innerHTML = r.status==='success'
-        ? `<span>✓ ${r.email} <small>(${r.entreprise})</small></span><span>Envoyé</span>`
-        : `<span>✗ ${r.email}</span><span title="${r.error}">Erreur</span>`;
+      d.className=`result ${r.status==='success'?'success':r.status==='skipped'?'skipped':'error'}`;
+      if(r.status==='success'){
+        d.innerHTML=`<span>✓ ${esc(r.email)} <small>(${esc(r.entreprise)})</small></span><span>Envoyé</span>`;
+      } else if(r.status==='skipped'){
+        d.innerHTML=`<span>${esc(r.email)}<small> — ${esc(r.reason)}</small></span><span>Ignorée</span>`;
+      } else {
+        const shortErr = r.error && r.error.length>120 ? r.error.slice(0,120)+'…' : (r.error||'Erreur inconnue');
+        d.style.flexDirection='column';
+        d.style.alignItems='stretch';
+        d.innerHTML=`<div style="display:flex;justify-content:space-between;gap:8px"><span>✗ ${esc(r.email)}</span><span>Erreur</span></div><div class="err-detail" title="${esc(r.error||'')}">${esc(shortErr)}</div>`;
+      }
       resultsDiv.appendChild(d);
     });
 
@@ -452,6 +480,8 @@ $('btnSend').addEventListener('click', async ()=>{
     if(data.invalid_emails && data.invalid_emails.length){
       summary.textContent+=` • ${data.invalid_emails.length} email(s) invalide(s) ignoré(s)`;
     }
+    if(data.skipped) summary.textContent+=` • ${data.skipped} déjà envoyée(s), ignorée(s).`;
+    document.dispatchEvent(new Event('campaigncomplete'));
   }catch(e){
     $('progress').style.width='0%';
     $('progressText').textContent='Erreur';
@@ -461,6 +491,8 @@ $('btnSend').addEventListener('click', async ()=>{
     summary.textContent='❌ '+e.message;
     console.error(e);
   }finally{
+    polling=false;
+    clearTimeout(firstPoll);
     btn.disabled=false;
     btn.textContent=originalText;
   }
