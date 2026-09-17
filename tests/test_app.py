@@ -1,5 +1,6 @@
 import json
 import smtplib
+import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -226,6 +227,155 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(self.records()[0]['status'], 'sending')
         self.assertEqual(self.send().json['skipped'], 1)
         self.assertEqual(self.smtp.sendmail.call_count, 1)
+
+    def test_manual_applications_without_email_persist_and_can_be_edited(self):
+        data = dict(entreprise='Atelier', stage='Python', status='sent', date_envoi='2026-09-15',
+                    source='LinkedIn', url='https://example.org/jobs/42', notes='Déposée sur le site')
+        first = self.client.post('/api/applications', json=data)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(self.client.post('/api/applications', json={**data, 'entreprise': 'Studio'}).status_code, 201)
+        records = TrackingStore(module.app.config['TRACKING_DB']).all()
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(r['email'] == '' for r in records))
+        self.assertEqual(self.client.get('/api/applications').json['stats']['sent'], 2)
+        changed = self.client.patch(f"/api/applications/{first.json['id']}", json={
+            'status': 'interview', 'date_entretien': '2026-09-22', 'source': 'Site carrière',
+            'entreprise': 'Atelier Numérique', 'notes': 'Entretien prévu',
+        })
+        self.assertEqual(changed.status_code, 200)
+        record = next(r for r in self.records() if r['id'] == first.json['id'])
+        self.assertEqual(record['source'], 'Site carrière')
+        self.assertEqual(record['url'], data['url'])
+        self.assertEqual(record['date_envoi'], '15/09/2026')
+        self.assertTrue(record['editable'])
+        self.smtp.sendmail.assert_not_called()
+
+    def test_manual_validation_and_duplicates_do_not_overwrite_history(self):
+        base = dict(entreprise='Atelier', stage='Python', status='sent')
+        invalid = [dict(entreprise=''), dict(stage=''), dict(email='invalide'),
+                   dict(url='javascript:alert(1)'), dict(date_envoi='31/02/2026'),
+                   dict(status='inconnu'), dict(status='draft', date_envoi='2026-01-01')]
+        for change in invalid:
+            with self.subTest(change=change):
+                self.assertEqual(self.client.post('/api/applications', json={**base, **change}).status_code, 400)
+        self.assertEqual(self.records(), [])
+        response = self.client.post('/api/applications', json={**base, 'notes': 'À conserver'})
+        self.assertEqual(response.status_code, 201)
+        duplicate = self.client.post('/api/applications', json={**base, 'entreprise': 'ATELIER', 'stage': 'python', 'notes': 'Écraser'})
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(self.records()[0]['notes'], 'À conserver')
+        # Le poste doit garder sa ponctuation : C++ et C# sont distincts.
+        for stage in ('C++', 'C#'):
+            self.assertEqual(self.client.post('/api/applications', json={**base, 'stage': stage}).status_code, 201)
+        another = self.client.post('/api/applications', json={**base, 'entreprise': 'Studio'})
+        conflict = self.client.patch(f"/api/applications/{another.json['id']}", json={'entreprise': 'Atelier'})
+        self.assertEqual(conflict.status_code, 409)
+        self.smtp.sendmail.assert_not_called()
+
+    def test_import_history_mixed_rows_reports_errors_and_ignores_duplicates(self):
+        rows = [['Entreprise', 'Poste', 'Email', 'Date candidature', 'Statut', 'Site', 'Lien de l’offre', 'Notes'],
+                ['Atelier', 'Python', '', '15/09/2026', 'Entretien', 'LinkedIn', 'https://example.org/42', 'Contact Camille'],
+                ['Studio', 'Python', 'rh@studio.example', '', '', 'Indeed', '', 'À préparer'],
+                ['Atelier', 'Python', '', '15/09/2026', 'Entretien', '', '', 'Doublon'],
+                ['Erreur date', 'Java', '', '31/02/2026', 'En attente', '', '', ''],
+                ['Erreur statut', 'Java', '', '', 'Mystère', '', '', ''],
+                ['Date inconnue', 'Web', '', '', 'En attente', '', '', '']]
+        def upload():
+            return self.client.post('/api/applications/import', data={'file': (self.workbook(rows, 4), 'suivi.xlsx')})
+        first = upload()
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual((first.json['created'], first.json['skipped'], first.json['invalid']), (3, 1, 2))
+        self.assertEqual([r['row'] for r in first.json['invalid_rows']], [8, 9])
+        records = {r['entreprise']: r for r in self.records()}
+        self.assertEqual(records['Atelier']['source'], 'LinkedIn')
+        self.assertEqual(records['Atelier']['url'], 'https://example.org/42')
+        self.assertEqual(records['Atelier']['notes'], 'Contact Camille')
+        self.assertEqual(records['Studio']['status'], 'draft')
+        self.assertEqual(records['Studio']['sent_at'], '')
+        self.assertEqual(records['Date inconnue']['status'], 'sent')
+        self.assertEqual(records['Date inconnue']['sent_at'], '')
+        self.assertEqual(self.client.get('/api/applications').json['stats']['sent'], 2)
+        self.client.patch(f"/api/applications/{records['Atelier']['id']}", json={'notes': 'Modifiée dans le suivi'})
+        second = upload()
+        self.assertEqual((second.json['created'], second.json['skipped'], second.json['invalid']), (0, 4, 2))
+        self.assertIn('Modifiée dans le suivi', [r['notes'] for r in self.records()])
+        self.smtp.sendmail.assert_not_called()
+
+    def test_history_csv_without_email_and_campaign_import_remains_strict(self):
+        content = 'Entreprise;Poste;Statut;Source;Date relance\n"Atelier; Ouest";Python;À relancer;Indeed;01/09/2026\n'
+        response = self.client.post('/api/applications/import', data={'file': (BytesIO(content.encode()), 'suivi.csv')})
+        self.assertEqual(response.json['created'], 1)
+        self.assertEqual(self.records()[0]['entreprise'], 'Atelier; Ouest')
+        self.assertTrue(self.records()[0]['due'])
+        campaign = self.client.post('/api/parse-excel', data={'file': (BytesIO(content.encode()), 'suivi.csv')})
+        self.assertEqual(campaign.status_code, 400)
+        invalid = self.client.post('/api/applications/import', data={'file': (BytesIO(b'invalid'), 'suivi.xlsx')})
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_external_sent_status_blocks_resending_even_without_known_date(self):
+        self.client.post('/api/applications', json=dict(entreprise='Atelier', stage='Développement', status='sent'))
+        response = self.send()
+        self.assertEqual(response.json['skipped'], 1)
+        self.smtp.sendmail.assert_not_called()
+        self.assertEqual(len(self.records()), 1)
+
+    def test_imported_draft_can_be_updated_then_sent_without_duplicate_record(self):
+        response = self.client.post('/api/applications', json=dict(entreprise='Atelier', stage='Python', status='draft'))
+        record_id = response.json['id']
+        changed = self.client.patch(f'/api/applications/{record_id}', json={'stage': 'Développement', 'notes': 'À conserver'})
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(self.send().json['success'], 1)
+        self.assertEqual(len(self.records()), 1)
+        self.assertEqual(self.records()[0]['id'], record_id)
+        self.assertEqual(self.records()[0]['origin'], 'smtp')
+        self.assertEqual(self.records()[0]['email'], 'rh@atelier.example')
+        self.assertEqual(self.records()[0]['notes'], 'À conserver')
+
+    def test_existing_database_migration_keeps_ids_and_results(self):
+        path = module.app.config['TRACKING_DB']
+        with sqlite3.connect(path) as db:
+            db.execute('''CREATE TABLE applications (id INTEGER PRIMARY KEY, email TEXT NOT NULL,
+                stage TEXT NOT NULL, details TEXT NOT NULL, status TEXT NOT NULL, sent_at TEXT DEFAULT '',
+                updated_at TEXT NOT NULL, follow_up_date TEXT DEFAULT '', notes TEXT DEFAULT '', error TEXT DEFAULT '',
+                UNIQUE(email, stage))''')
+            db.execute('INSERT INTO applications VALUES (?,?,?,?,?,?,?,?,?,?)',
+                       (42, 'old@example.org', 'Python', json.dumps({'entreprise': 'Ancienne'}), 'accepted',
+                        '2026-09-01T10:00:00', '2026-09-01T10:00:00', '', 'Conserver', ''))
+        response = self.client.post('/api/applications', json=dict(entreprise='Nouvelle', stage='Python', status='sent'))
+        self.assertEqual(response.status_code, 201)
+        old = next(r for r in self.records() if r['id'] == 42)
+        self.assertEqual(old['notes'], 'Conserver')
+        self.assertEqual(old['status'], 'accepted')
+        self.assertEqual(old['origin'], 'smtp')
+        self.assertEqual(len(TrackingStore(path).all()), 2)
+
+    def test_external_export_round_trip_preserves_source_url_email_and_notes(self):
+        self.client.post('/api/applications', json=dict(entreprise='Atelier', stage='Python', email='rh@atelier.example',
+            coordonnees='0102030405', source='LinkedIn', url='https://example.org/42', notes='=1+1', status='interview',
+            date_envoi='2026-09-15', date_entretien='2026-10-01'))
+        export = self.client.get('/api/applications/export')
+        wb = openpyxl.load_workbook(BytesIO(export.data))
+        self.assertEqual(wb.active['K5'].value, 'LinkedIn')
+        self.assertEqual(wb.active['L5'].value, 'https://example.org/42')
+        self.assertEqual(wb.active['J5'].data_type, 's')
+        self.assertIn('rh@atelier.example', wb.active['F5'].value)
+        self.assertIn('0102030405', wb.active['F5'].value)
+        module.app.config['TRACKING_DB'] = str(Path(self.temp.name) / 'roundtrip.sqlite3')
+        response = self.client.post('/api/applications/import', data={'file': (BytesIO(export.data), 'suivi.xlsx')})
+        self.assertEqual(response.json['created'], 1)
+        record = self.records()[0]
+        self.assertEqual(record['source'], 'LinkedIn')
+        self.assertEqual(record['date_entretien'], '2026-10-01')
+        self.assertEqual(record['notes'], '=1+1')
+
+    def test_update_workbook_matches_external_company_and_position_without_email(self):
+        self.client.post('/api/applications', json=dict(entreprise='Atelier', stage='Python', status='interview'))
+        upload = self.workbook([['Entreprise', 'Poste', 'Statut'], ['Atelier', 'Python', 'En attente'], ['Studio', 'Python', 'En attente']])
+        response = self.client.post('/api/update-excel', data={'file': (upload, 'suivi.xlsx')})
+        self.assertEqual(response.headers['X-Updated-Rows'], '1')
+        wb = openpyxl.load_workbook(BytesIO(response.data))
+        self.assertEqual(wb.active['C2'].value, 'Entretien')
+        self.assertEqual(wb.active['C3'].value, 'En attente')
 
 
 if __name__ == '__main__':

@@ -48,7 +48,32 @@ La casse et les espaces à l’intérieur des variables sont acceptés. L’opti
 
 ## Tableurs : importer, remplir et mettre à jour
 
-### Import Excel / CSV
+### Alimenter directement le tableau de bord
+
+Dans **Mes candidatures → Importer un tableur**, sélectionnez un fichier `.xlsx`, `.xlsm` ou `.csv` UTF-8. Ses candidatures sont ajoutées à l’historique SQLite et apparaissent immédiatement dans le tableau de bord, sans envoi d’email et sans configuration SMTP.
+
+- Chaque ligne doit renseigner **Entreprise** et **Poste** (ou **Stage ciblé**). L’email est facultatif : les candidatures faites sur un site externe sont acceptées.
+- Les dates de candidature, statuts, contacts, notes, entretiens et dates de relance sont conservés. Les colonnes **Source**, **Site** ou **Plateforme** et **Lien de l’offre** / **URL** sont également reconnues.
+- Une ligne sans statut prend le statut « En attente de réponse » si elle a une date de candidature, sinon « À envoyer ». Un statut explicite comme « Entretien » peut être importé sans date d’envoi connue : aucune date n’est inventée.
+- Statuts reconnus : À envoyer / Brouillon, En attente / Envoyée, À relancer, Entretien / RDV fixé, Acceptée, Refusée et Échec d’envoi. Un statut ou une date non reconnu est signalé avec le numéro de ligne pour correction.
+- Un bilan détaille les ajouts, les doublons ignorés et les lignes invalides. Un nouvel import du même fichier ne recrée pas les mêmes candidatures et n’écrase pas les statuts ou notes déjà modifiés dans l’application.
+- Le rapprochement utilise **email + poste**, ou **entreprise + poste** si l’email manque d’un côté. Des entreprises différentes sans email peuvent donc avoir le même intitulé de poste.
+
+Exemple de suivi externe :
+
+```csv
+Entreprise;Poste;Date candidature;Statut;Site;Lien de l'offre;Notes
+Atelier Numérique;Stage Python;15/09/2026;En attente;LinkedIn;https://example.org/offres/42;Candidature déposée en ligne
+Studio Ouest;Alternance web;;À envoyer;Indeed;;Dossier à préparer
+```
+
+### Ajouter une candidature manuellement
+
+Dans **Mes candidatures → Ajouter manuellement**, renseignez l’entreprise et le poste. Vous pouvez ajouter le site d’origine (LinkedIn, Indeed, site carrière…), le lien de l’offre, un email facultatif, les coordonnées du contact, la date, le statut, une relance et des notes.
+
+Le formulaire propose la date du jour ; vous pouvez la corriger ou la vider si elle est inconnue. Choisir « À envoyer » efface la date d’envoi. **Mettre à jour** permet ensuite de corriger les informations de ces candidatures et de celles importées. Elles restent disponibles après redémarrage et figurent dans les exports Excel, y compris la source et le lien de l’offre.
+
+### Import Excel / CSV pour préparer des envois
 
 - Formats : **`.xlsx`, `.xlsm`** (lecture de la feuille active), **CSV UTF-8**, ou TXT pour une liste simple d’emails.
 - Les en-têtes sont reconnus dans les **20 premières lignes**, quelle que soit la position des colonnes. Le modèle historique avec en-têtes en ligne 4 reste compatible.
@@ -71,18 +96,19 @@ Studio Ouest;contact@studio.example;Alternance développement web;Alex
 2. **Exporter cette liste en Excel** : export des destinataires sélectionnés, avec leurs informations importées. Une candidature non envoyée a une date d’envoi vide et le statut « À envoyer ».
 3. **Exporter le suivi Excel**, dans Mes candidatures : export de l’historique persistant, avec dates d’envoi réelles, statuts actuels, interlocuteurs, entretiens, relances et notes. Les envois échoués restent sans date d’envoi.
 
-Le bouton **Compléter mon tableur** permet de charger votre propre `.xlsx` et de télécharger une copie mise à jour. Le rapprochement utilise l’email et le poste, sans dépendre de l’ordre des lignes. Si le poste est absent, une correspondance email unique est requise. Les cas ambigus sont laissés inchangés. Les colonnes de suivi manquantes sont ajoutées ; les autres cellules, formules, styles usuels et feuilles sont conservés par openpyxl. Cette fonction ne modifie pas votre fichier original sur disque et n’est pas une synchronisation Google Sheets.
+Le bouton **Compléter mon tableur** permet de charger votre propre `.xlsx` et de télécharger une copie mise à jour. Le rapprochement utilise l’email et le poste, sans dépendre de l’ordre des lignes. Si le poste est absent, une correspondance email unique est requise ; sans email, une correspondance entreprise/poste unique est requise. Les cas ambigus sont laissés inchangés. Les colonnes de suivi manquantes sont ajoutées ; les autres cellules, formules, styles usuels et feuilles sont conservés par openpyxl. Cette fonction ne modifie pas votre fichier original sur disque et n’est pas une synchronisation Google Sheets.
 
 ## Historique, relances et doublons
 
 - L’historique est enregistré dans **`data/applications.sqlite3`** et reste disponible après redémarrage. Sauvegardez ce fichier pour conserver votre suivi.
+- La base existante est migrée automatiquement pour permettre les candidatures sans email, en conservant les identifiants et les données déjà enregistrées.
 - Statuts modifiables après un envoi : en attente, à relancer, entretien, acceptée, refusée.
 - Recherche par entreprise, adresse, poste, interlocuteur ou notes, et filtres par statut.
 - Un rappel est fixé à 3, 7, 14 ou 30 jours après l’envoi, selon votre choix. Les candidatures en attente arrivées à échéance apparaissent dans **À relancer**. Ce sont des rappels dans le tableau de bord ; aucun email de relance n’est envoyé automatiquement.
 - Un même couple **email / poste** déjà envoyé est ignoré lors d’une nouvelle campagne, même après redémarrage. Les doublons d’une même liste sont supprimés. Une réservation SQLite atomique protège aussi les envois concurrents.
 - Une date d’envoi présente dans un tableur empêche un nouvel envoi de la ligne. Vous pouvez vider une date provenant d’un ancien brouillon dans l’aperçu éditable ; l’historique de l’application continue de protéger les envois réellement effectués.
 - Un échec peut être chargé avec **Reprendre** : le destinataire est remis dans le formulaire pour un nouvel essai. Une campagne interrompue dont l’acceptation SMTP est incertaine reste réservée ; vérifiez l’envoi avant toute correction manuelle du suivi.
-- « Envoyée » signifie que le serveur SMTP a accepté le message, pas que le destinataire l’a lu ni que la livraison finale est garantie.
+- Pour les envois de l’application, « Envoyée » signifie que le serveur SMTP a accepté le message, pas que le destinataire l’a lu ni que la livraison finale est garantie. Pour les candidatures externes, le statut repose sur les informations saisies ou importées ; leur dépôt n’est pas vérifié sur le site externe. Le compteur des candidatures envoyées inclut ces candidatures déclarées déposées, même si leur date exacte est inconnue.
 
 Le brouillon (profil, texte, destinataires, réglages) est sauvegardé dans le navigateur. Le **mot de passe SMTP et le fichier CV ne sont pas sauvegardés** : renseignez-les à nouveau après rechargement. Les CV temporaires et les PDF créés pour l’envoi sont supprimés après traitement ; les PDF d’aperçu restent dans `generated/`.
 
@@ -141,6 +167,8 @@ Les tests utilisent une base temporaire et un SMTP simulé : aucun email réel n
 | POST | `/api/send` | Envoyer une campagne multipart, dont `cv` |
 | GET | `/api/campaigns/<id>` | Consulter la progression de la campagne |
 | GET | `/api/applications` | Historique, statistiques et statuts |
+| POST | `/api/applications` | Ajouter manuellement une candidature (entreprise et stage requis, email facultatif) |
+| POST | `/api/applications/import` | Importer un tableur directement dans l’historique (`file` multipart) |
 | PATCH | `/api/applications/<id>` | Modifier statut, dates, interlocuteur et notes |
 | GET | `/api/applications/export` | Exporter l’historique Excel |
 | POST | `/api/update-excel` | Compléter un `.xlsx` existant (`file` multipart) |

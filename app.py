@@ -19,7 +19,7 @@ from fpdf import FPDF
 import json
 import unicodedata
 from io import BytesIO
-from tracking import TrackingStore, STATUSES
+from tracking import TrackingStore, STATUSES, SUBMITTED_STATUSES, DuplicateApplication
 from spreadsheets import EMAIL, read_excel, read_csv, update_workbook, write_text
 
 app = Flask(__name__)
@@ -63,7 +63,7 @@ EXCEL_HEADERS = [
     "Coordonnées de l'interlocuteur (tel, @)",
     "Date d'un éventuel entretien",
     "Résultats de la démarche (en attente de réponse, doit rappeler, rdv fixé, étude de la candidature, etc.)",
-    "Date relance", "Notes"
+    "Date relance", "Notes", "Source", "Lien de l'offre"
 ]
 
 def strip_accents(s):
@@ -106,7 +106,7 @@ def create_suivi_excel(entries, poste_global="", type_default="Candidature spont
     ws = wb.active
     ws.title = "Suivi Candidatures"
     # Lignes 1-3 : Titre + consigne
-    ws.merge_cells('A1:J1')
+    ws.merge_cells('A1:L1')
     c1 = ws['A1']
     c1.value = "Suivi des candidatures — Généré par Candidatures Auto"
     c1.font = Font(name='Calibri', size=13, bold=True, color="FFFFFF")
@@ -131,11 +131,11 @@ def create_suivi_excel(entries, poste_global="", type_default="Candidature spont
         cell.border = border
     ws.row_dimensions[4].height = 36
     # Largeurs colonnes
-    widths = [16, 22, 24, 22, 20, 26, 16, 30, 16, 40]
+    widths = [16, 22, 24, 22, 20, 26, 16, 30, 16, 40, 22, 40]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     ws.freeze_panes = "A5"
-    ws.auto_filter.ref = f"A4:J{max(4, len(entries) + 4)}"
+    ws.auto_filter.ref = f"A4:L{max(4, len(entries) + 4)}"
     # Données dès ligne 5
     today = datetime.now().strftime("%d/%m/%Y")
     for row_idx, entry in enumerate(entries, start=5):
@@ -151,13 +151,18 @@ def create_suivi_excel(entries, poste_global="", type_default="Candidature spont
         ws.cell(row=row_idx, column=3, value=entry.get("type_candidature") or type_default)
         ws.cell(row=row_idx, column=4, value=stage)
         ws.cell(row=row_idx, column=5, value=entry.get("interlocuteur") or "")
-        ws.cell(row=row_idx, column=6, value=entry.get('coordonnees') or email)
+        coordinates = entry.get('coordonnees') or email
+        if email and email.casefold() not in coordinates.casefold():
+            coordinates = f'{email} / {coordinates}'
+        ws.cell(row=row_idx, column=6, value=coordinates)
         ws.cell(row=row_idx, column=7, value=entry.get("date_entretien") or "")
         ws.cell(row=row_idx, column=8, value=entry.get("resultats") or "À envoyer")
         ws.cell(row=row_idx, column=9, value=entry.get('follow_up_date', ''))
         ws.cell(row=row_idx, column=10, value=entry.get('notes', ''))
+        ws.cell(row=row_idx, column=11, value=entry.get('source', ''))
+        ws.cell(row=row_idx, column=12, value=entry.get('url', ''))
         # Style lignes données
-        for col in range(1, 11):
+        for col in range(1, 13):
             c = ws.cell(row=row_idx, column=col)
             write_text(c, c.value)
             c.font = Font(name='Calibri', size=9)
@@ -892,12 +897,48 @@ def api_applications():
     records = store().all()
     stats = {
         'total': len(records),
-        'sent': sum(bool(r['sent_at']) for r in records),
+        'sent': sum(r['status'] in SUBMITTED_STATUSES or bool(r['sent_at']) for r in records),
         'interviews': sum(r['status'] == 'interview' for r in records),
         'due': sum(r['due'] for r in records),
         'failed': sum(r['status'] == 'error' for r in records),
     }
     return jsonify({'applications': records, 'stats': stats, 'statuses': STATUSES})
+
+
+@app.post('/api/applications')
+def api_create_application():
+    try:
+        record_id = store().create_external(request.get_json(silent=True), origin='manual')
+    except DuplicateApplication as error:
+        return jsonify({'error': str(error)}), 409
+    except ValueError as error:
+        return jsonify({'error': str(error)}), 400
+    return jsonify({'id': record_id}), 201
+
+
+@app.post('/api/applications/import')
+def api_import_applications():
+    file = request.files.get('file')
+    if not file or not file.filename.lower().endswith(('.xlsx', '.xlsm', '.csv')):
+        return jsonify({'error': 'Sélectionnez un fichier .xlsx, .xlsm ou .csv (UTF-8 avec en-têtes).'}), 400
+    try:
+        reader = read_csv if file.filename.lower().endswith('.csv') else read_excel
+        entries, invalid_rows, _ = reader(file.stream, HEADER_KEYS, normalize_header, extract_company_name, for_tracking=True)
+    except Exception as error:
+        return jsonify({'error': f'Lecture du tableur impossible : {error}'}), 400
+    tracking = store()
+    created, skipped = [], []
+    for entry in entries:
+        try:
+            record_id = tracking.create_external(entry, origin='spreadsheet')
+            created.append({'row': entry['source_row'], 'id': record_id})
+        except DuplicateApplication as error:
+            skipped.append({'row': entry['source_row'], 'reason': str(error)})
+        except ValueError as error:
+            invalid_rows.append({'row': entry['source_row'], 'reason': str(error)})
+    return jsonify({'created': len(created), 'skipped': len(skipped), 'invalid': len(invalid_rows),
+                    'created_rows': created, 'skipped_rows': skipped,
+                    'invalid_rows': sorted(invalid_rows, key=lambda row: row['row'])})
 
 
 @app.patch('/api/applications/<int:record_id>')
@@ -906,6 +947,8 @@ def api_update_application(record_id):
         store().update(record_id, request.get_json() or {})
     except LookupError as error:
         return jsonify({'error': str(error)}), 404
+    except DuplicateApplication as error:
+        return jsonify({'error': str(error)}), 409
     except ValueError as error:
         return jsonify({'error': str(error)}), 400
     return jsonify({'ok': True})
